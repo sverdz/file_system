@@ -82,7 +82,7 @@ def _bootstrap_venv() -> None:
     if not python_exe.exists():
         raise SystemExit("Помилка створення .venv: python не знайдено")
     print("[deps] Перезапуск у .venv...")
-    args = [str(python_exe), "-m", "app.main", "--reexec", *sys.argv[1:]]
+    args = [str(python_exe), *sys.argv]
     os.execv(str(python_exe), args)
 
 

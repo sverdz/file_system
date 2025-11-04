@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,8 +29,8 @@ DEFAULT_CATEGORY_MAP = [
 
 
 class DuplicatePolicy(BaseModel):
-    exact: Literal["quarantine", "delete_to_trash"] = "quarantine"
-    near: Literal["quarantine"] = "quarantine"
+    exact: str = Field("quarantine", regex="^(quarantine|delete_to_trash)$")
+    near: str = Field("quarantine", regex="^(quarantine)$")
 
 
 class DedupSettings(BaseModel):
@@ -46,7 +46,7 @@ class Config(BaseModel):
     category_map: list[str] = Field(default_factory=lambda: list(DEFAULT_CATEGORY_MAP))
     dedup: DedupSettings = Field(default_factory=DedupSettings)
     duplicates_policy: DuplicatePolicy = Field(default_factory=DuplicatePolicy)
-    export_mode: Literal["views_only", "physical_sort", "prompt"] = "prompt"
+    export_mode: str = Field("prompt", regex="^(views_only|physical_sort|prompt)$")
     sorted_targets: list[str] = Field(default_factory=lambda: ["by_category", "by_date", "by_type"])
     sorted_root: str = "_sorted"
     ocr_lang: str = "ukr+eng"

@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List
 
-try:
-    from chardet import detect
-except ImportError:  # pragma: no cover - fallback when dependency missing
-    detect = None
+from chardet import detect
 
 
 @dataclass
@@ -73,8 +70,6 @@ def detect_encoding(path: Path, chunk_size: int = 65536) -> str | None:
         with path.open("rb") as f:
             sample = f.read(chunk_size)
     except OSError:
-        return None
-    if detect is None:
         return None
     result = detect(sample)
     return result["encoding"] if result else None
