@@ -1,0 +1,16 @@
+pydantic
+loguru
+chardet
+unidecode
+colorama
+rich
+pandas
+openpyxl
+xlwt
+python-docx
+pdfminer.six
+pillow
+pytesseract
+requests
+send2trash
+pyyaml
