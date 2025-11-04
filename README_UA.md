@@ -21,9 +21,27 @@ python -m app.main
 Перед першим запуском утворюється `.venv`. Усі залежності перелічено в `requirements.txt`. Для ручної інсталяції:
 
 ```bash
+# Linux/macOS
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m app.main
+
+# Windows (PowerShell)
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements.txt
+python -m app.main
 ```
+
+> **Примітка.** Якщо не активуєте `.venv`, виконайте команди напряму:
+>
+> ```powershell
+> .\.venv\Scripts\python.exe -m pip install --upgrade pip
+> .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+> .\.venv\Scripts\python.exe -m app.main
+> ```
 
 ## Побудова .exe
 Скрипт `build_win.bat` встановлює необхідні пакети й запускає PyInstaller у режимі `--onefile`.

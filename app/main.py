@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import deps
+from app import deps
 
 deps.ensure_ready()
 
@@ -17,16 +17,16 @@ from colorama import Fore, Style, init as colorama_init
 from rich.console import Console
 from rich.table import Table
 
-from .classify import classify_text, summarize_text
-from .config import Config, load_config, save_config
-from .dedup import DuplicateGroup, detect_exact_duplicates
-from .extract import ExtractionResult, extract_text
-from .inventory import InventoryRow, RunSummary, write_inventory
-from .loggingx import log_event, log_readable, setup_logging
-from .progress import ProgressTracker
-from .rename import plan_renames
-from .scan import FileMeta, ensure_hash, scan_directory
-from .sortout import delete_duplicates, quarantine_files, sort_files
+from app.classify import classify_text, summarize_text
+from app.config import Config, load_config, save_config
+from app.dedup import DuplicateGroup, detect_exact_duplicates
+from app.extract import ExtractionResult, extract_text
+from app.inventory import InventoryRow, RunSummary, write_inventory
+from app.loggingx import log_event, log_readable, setup_logging
+from app.progress import ProgressTracker
+from app.rename import plan_renames
+from app.scan import FileMeta, ensure_hash, scan_directory
+from app.sortout import delete_duplicates, quarantine_files, sort_files
 
 colorama_init()
 console = Console()
@@ -178,7 +178,11 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     for group in exact_groups:
         canonical = group.canonical()
         duplicates_files_map[group.group_id] = []
-        for idx, file_meta in enumerate(sorted(group.files, key=lambda m: m.path)):
+        ordered_files = sorted(
+            group.files,
+            key=lambda m: (m.path != canonical.path, m.path),
+        )
+        for idx, file_meta in enumerate(ordered_files):
             info: Dict[str, Optional[str]] = {
                 "dup_type": "exact_dup",
                 "dup_group_id": group.group_id,
@@ -186,7 +190,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 "dup_master_path": str(canonical.path),
             }
             duplicates_map[file_meta.path] = info
-            if idx > 0:
+            if file_meta.path != canonical.path:
                 duplicates_files_map[group.group_id].append(file_meta.path)
 
     rename_candidates = [meta for meta in metas if duplicates_map.get(meta.path, {}).get("dup_rank", "V1") == "V1"]
