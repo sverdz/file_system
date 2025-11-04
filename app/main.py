@@ -178,7 +178,11 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     for group in exact_groups:
         canonical = group.canonical()
         duplicates_files_map[group.group_id] = []
-        for idx, file_meta in enumerate(sorted(group.files, key=lambda m: m.path)):
+        ordered_files = sorted(
+            group.files,
+            key=lambda m: (m.path != canonical.path, m.path),
+        )
+        for idx, file_meta in enumerate(ordered_files):
             info: Dict[str, Optional[str]] = {
                 "dup_type": "exact_dup",
                 "dup_group_id": group.group_id,
@@ -186,7 +190,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 "dup_master_path": str(canonical.path),
             }
             duplicates_map[file_meta.path] = info
-            if idx > 0:
+            if file_meta.path != canonical.path:
                 duplicates_files_map[group.group_id].append(file_meta.path)
 
     rename_candidates = [meta for meta in metas if duplicates_map.get(meta.path, {}).get("dup_rank", "V1") == "V1"]
