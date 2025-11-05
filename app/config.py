@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 CONFIG_VERSION = "1.0"
 DEFAULT_TEMPLATE = "{category}_{yyyy}-{mm}-{dd}_{short_title}_v{version:02d}_[{hash8}]{ext}"
@@ -40,6 +40,8 @@ class DedupSettings(BaseModel):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     version: str = CONFIG_VERSION
     root: Path = Path.cwd()
     rename_template: str = DEFAULT_TEMPLATE
@@ -52,9 +54,6 @@ class Config(BaseModel):
     ocr_lang: str = "ukr+eng"
     llm_enabled: bool = False
     threads: int = 0
-
-    class Config:
-        arbitrary_types_allowed = True
 
     @property
     def root_path(self) -> Path:
@@ -71,18 +70,28 @@ def config_locations() -> Dict[str, Path]:
 
 
 def load_config(explicit: Optional[Path] = None) -> Config:
+    import yaml  # type: ignore
+
     if explicit and explicit.exists():
-        return Config.parse_file(explicit)
+        with explicit.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if data is None:
+            return Config()
+        return Config.model_validate(data)
     for location in config_locations().values():
         if location.exists():
-            return Config.parse_file(location)
+            with location.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                return Config()
+            return Config.model_validate(data)
     return Config()
 
 
 def save_config(cfg: Config, run_dir: Optional[Path] = None) -> None:
     import yaml  # type: ignore
 
-    data = json.loads(cfg.json())
+    data = cfg.model_dump(mode="json")
     for name, path in config_locations().items():
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as f:
