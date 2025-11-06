@@ -153,14 +153,14 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - claude-3-haiku-20240307 (швидка, дешева)")
-            console.print("   - claude-3-sonnet-20240229 (баланс)")
-            console.print("   - claude-3-opus-20240229 (найкраща)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'claude-3-haiku-20240307'}): ").strip()
+            console.print("   - claude-3-5-haiku-20241022 (швидка, дешева)")
+            console.print("   - claude-3-5-sonnet-20241022 (найкраща для більшості)")
+            console.print("   - claude-3-opus-20240229 (найпотужніша)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'claude-3-5-haiku-20241022'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "claude-3-haiku-20240307"
+                cfg.llm_model = "claude-3-5-haiku-20241022"
 
             # Перевірка підключення
             if cfg.llm_api_key_claude:
@@ -188,14 +188,14 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - gpt-3.5-turbo (швидка, дешева)")
-            console.print("   - gpt-4 (краща якість)")
-            console.print("   - gpt-4-turbo (найновіша)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-3.5-turbo'}): ").strip()
+            console.print("   - gpt-4o-mini (швидка, дешева)")
+            console.print("   - gpt-4o (найкраща multimodal)")
+            console.print("   - gpt-4-turbo (попередня топова)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-4o-mini'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "gpt-3.5-turbo"
+                cfg.llm_model = "gpt-4o-mini"
 
             # Перевірка підключення
             if cfg.llm_api_key_openai:
