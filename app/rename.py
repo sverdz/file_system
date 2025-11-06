@@ -37,20 +37,31 @@ def plan_renames(files: List[FileMeta], template: str, contexts: Dict[Path, Dict
     plans: List[RenamePlan] = []
     used: Dict[Path, set[str]] = {}
     for meta in sorted(files, key=lambda m: str(m.path)):
-        ctx = contexts.get(meta.path, {})
+        ctx = contexts.get(meta.path, {}).copy()  # Копія щоб не змінювати оригінал
         ctx.setdefault("short_title", slugify(ctx.get("short_title", meta.path.stem)))
         ctx.setdefault("hash8", (meta.sha256 or "0" * 8)[:8])
         ctx.setdefault("ext", meta.path.suffix)
+
+        # Переконатися що version є числом
+        if "version" in ctx:
+            if isinstance(ctx["version"], str):
+                try:
+                    ctx["version"] = int(ctx["version"])
+                except ValueError:
+                    ctx["version"] = 1
+        else:
+            ctx["version"] = 1
+
         name = build_filename(template, ctx)
         parent = meta.path.parent
         used.setdefault(parent, set())
-        version = 1
+        version = ctx["version"]
         candidate = name
         while candidate in used[parent]:
             version += 1
-            ctx["version"] = f"{version:02d}"
+            ctx["version"] = version
             candidate = build_filename(template, ctx)
         used[parent].add(candidate)
-        plans.append(RenamePlan(meta=meta, new_name=candidate, collision=version > 1))
+        plans.append(RenamePlan(meta=meta, new_name=candidate, collision=version > ctx.get("version", 1)))
     return plans
 
