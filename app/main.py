@@ -22,6 +22,7 @@ from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
 from app.inventory import InventoryRow, RunSummary, write_inventory
+from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
@@ -268,6 +269,30 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print(f"[red]Помилка: {root} не є директорією[/red]")
             return
 
+        # Створити LLM клієнт якщо увімкнено
+        llm_client = None
+        if cfg.llm_enabled and cfg.llm_provider != "none":
+            api_key = ""
+            if cfg.llm_provider == "claude":
+                api_key = cfg.llm_api_key_claude
+            elif cfg.llm_provider == "chatgpt":
+                api_key = cfg.llm_api_key_openai
+
+            if api_key:
+                llm_client = LLMClient(
+                    provider=cfg.llm_provider,
+                    api_key=api_key,
+                    model=cfg.llm_model,
+                    enabled=True,
+                )
+                console.print(
+                    f"[green]✓[/green] LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})"
+                )
+            else:
+                console.print(
+                    f"[yellow]⚠[/yellow] LLM увімкнено але API ключ не налаштовано"
+                )
+
         try:
             metas = scan_directory(root)
         except Exception as exc:
@@ -300,10 +325,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             try:
                 ensure_hash(meta)
                 result = extract_text(meta, cfg.ocr_lang)
-                classification = classify_text(result.text)
+                # Використовуємо LLM для класифікації якщо доступний
+                classification = classify_text(result.text, llm_client=llm_client)
                 category = classification.get("category") or "інше"
                 date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
-                summary = summarize_text(result.text)
+                # Якщо LLM повернув summary, використовуємо його
+                summary = classification.get("summary") or summarize_text(result.text, llm_client=llm_client)
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=result,
@@ -589,6 +616,15 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
             if summary.duplicate_files > 0:
                 console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
+
+            # Статистика LLM
+            if llm_client:
+                stats = llm_client.get_stats()
+                if stats["requests"] > 0:
+                    console.print(
+                        f"[magenta]🤖 LLM запитів:[/magenta] {stats['requests']}, "
+                        f"[magenta]токенів:[/magenta] {stats['tokens']}"
+                    )
         except Exception as exc:
             tracker.stop_visual()
             console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")
