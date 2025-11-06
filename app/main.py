@@ -188,14 +188,15 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - gpt-4o-mini (швидка, дешева)")
-            console.print("   - gpt-4o (найкраща multimodal)")
-            console.print("   - gpt-4-turbo (попередня топова)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-4o-mini'}): ").strip()
+            console.print("   - gpt-5-mini (найновіша економна, серпень 2025)")
+            console.print("   - gpt-5 (найпотужніша, серпень 2025)")
+            console.print("   - gpt-4.1 (квітень 2025)")
+            console.print("   - gpt-4o-mini (попередня економна)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-5-mini'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "gpt-4o-mini"
+                cfg.llm_model = "gpt-5-mini"
 
             # Перевірка підключення
             if cfg.llm_api_key_openai:
