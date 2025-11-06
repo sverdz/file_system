@@ -6,7 +6,6 @@ colorama
 rich
 pandas
 openpyxl
-xlwt
 python-docx
 pdfminer.six
 pillow

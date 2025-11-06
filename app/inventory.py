@@ -100,13 +100,9 @@ def write_inventory(rows: Iterable[InventoryRow], summary: RunSummary, run_dir: 
     }
     summary_df = pd.DataFrame([asdict(summary)])
     xlsx_path = run_dir / "inventory.xlsx"
-    xls_path = run_dir / "inventory.xls"
+
+    # Створюємо тільки .xlsx файл (сучасний формат) з openpyxl
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="inventory", index=False)
-        for sheet, view_df in views.items():
-            view_df.to_excel(writer, sheet_name=sheet, index=False)
-        summary_df.to_excel(writer, sheet_name="run_summary", index=False)
-    with pd.ExcelWriter(xls_path, engine="xlwt") as writer:
         df.to_excel(writer, sheet_name="inventory", index=False)
         for sheet, view_df in views.items():
             view_df.to_excel(writer, sheet_name=sheet, index=False)
