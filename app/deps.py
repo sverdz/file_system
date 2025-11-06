@@ -24,7 +24,15 @@ REQUIRED_PACKAGES: Tuple[str, ...] = (
     "pytesseract",
     "requests",
     "send2trash",
+    "pyyaml",
 )
+
+# Mapping for packages with non-standard import names
+PACKAGE_IMPORT_MAP = {
+    "python-docx": "docx",
+    "pdfminer.six": "pdfminer",
+    "pyyaml": "yaml",
+}
 
 OPTIONAL_PACKAGES: Tuple[str, ...] = (
     "pypdf",
@@ -89,8 +97,16 @@ def _bootstrap_venv() -> None:
 def _find_missing(packages: Iterable[str]) -> List[str]:
     missing: List[str] = []
     for pkg in packages:
+        # Determine the import name
+        import_name = PACKAGE_IMPORT_MAP.get(pkg, pkg)
+        # For packages not in the map, use the first part before dash
+        if import_name == pkg and "-" in pkg:
+            import_name = pkg.split("-")[0]
+        # Replace dots with underscores for some packages
+        import_name = import_name.replace("-", "_")
+
         try:
-            __import__(pkg.split("-")[0].replace(".", "_"))
+            __import__(import_name)
         except ImportError:
             missing.append(pkg)
     return missing
