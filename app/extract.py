@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import csv
+import io
+import logging
 import shutil
+import sys
+import warnings
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +17,12 @@ from PIL import Image
 import pytesseract
 
 from .scan import FileMeta, detect_encoding
+
+# Придушити всі попередження від pdfminer.six про невалідні кольори та обмеження PDF
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=UserWarning, module="pdfminer")
+warnings.filterwarnings("ignore", message=".*invalid float value.*")
+warnings.filterwarnings("ignore", message=".*should not allow text extraction.*")
 
 
 @dataclass
@@ -42,13 +53,25 @@ def extract_text(meta: FileMeta, ocr_lang: str = "ukr+eng") -> ExtractionResult:
         return ExtractionResult(text=text, source="parser", quality=0.9)
     if ext == ".pdf":
         try:
-            text = pdf_extract_text(str(meta.path))
-        except Exception:
+            # Витягти текст з PDF, придушуючи всі попередження pdfminer
+            # Створюємо буфер для перехоплення stderr
+            stderr_buffer = io.StringIO()
+            with redirect_stderr(stderr_buffer):
+                text = pdf_extract_text(str(meta.path))
+        except Exception as e:
+            # Логуємо тільки серйозні помилки, не технічні попередження
+            if "password" in str(e).lower():
+                # PDF захищений паролем
+                return ExtractionResult(text="", source="password_protected", quality=0.0)
             text = ""
-        if text.strip():
+
+        if text and text.strip():
             return ExtractionResult(text=text, source="parser", quality=0.7)
+
+        # Якщо текст не вилучено, спробувати OCR
         if ensure_tesseract_available():
             return ExtractionResult(text="", source="needs_ocr", quality=0.0)
+
         return ExtractionResult(text="", source="unsupported", quality=0.0)
     if ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"} and ensure_tesseract_available():
         image = Image.open(meta.path)
