@@ -96,8 +96,11 @@ def main() -> None:
             console.print("\n[yellow]Переривання... Зберігаю прогрес...[/yellow]")
             break
         except Exception as exc:
-            console.print(f"[red]Неочікувана помилка: {exc}[/red]")
-            console.print("Можна продовжити або вийти (8).")
+            console.print(f"\n[red]═══ Неочікувана помилка ═══[/red]")
+            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+            console.print("\n[yellow]Натисніть Enter щоб повернутися до меню...[/yellow]")
+            input()  # Чекаємо натискання Enter
+            # Продовжуємо цикл - повертаємось до меню
 
 
 def configure(cfg: Config) -> Config:
@@ -251,337 +254,348 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
     tracker.start_visual()
 
-    root = cfg.root_path
-
-    # Validate root path exists
-    if not root.exists():
-        tracker.stop_visual()
-        console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
-        return
-
-    if not root.is_dir():
-        tracker.stop_visual()
-        console.print(f"[red]Помилка: {root} не є директорією[/red]")
-        return
-
     try:
-        metas = scan_directory(root)
-    except Exception as exc:
-        tracker.stop_visual()
-        console.print(f"[red]Помилка сканування: {exc}[/red]")
-        return
+        root = cfg.root_path
 
-    if not metas:
-        tracker.stop_visual()
-        console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
-        return
+        # Validate root path exists
+        if not root.exists():
+            tracker.stop_visual()
+            console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
+            return
 
-    tracker.set_stage_total("scan", len(metas))
-    tracker.increment("scan", len(metas))
-    update_progress(run_dir, tracker)
+        if not root.is_dir():
+            tracker.stop_visual()
+            console.print(f"[red]Помилка: {root} не є директорією[/red]")
+            return
 
-    exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
-    tracker.increment("dedup", len(metas))
-    update_progress(run_dir, tracker)
-
-    file_contexts: Dict[Path, FileContext] = {}
-    tracker.set_stage_total("extract", len(metas))
-    for meta in metas:
         try:
-            ensure_hash(meta)
-            result = extract_text(meta, cfg.ocr_lang)
-            classification = classify_text(result.text)
-            category = classification.get("category") or "інше"
-            date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
-            summary = summarize_text(result.text)
-            file_contexts[meta.path] = FileContext(
-                meta=meta,
-                text=result,
-                classification=classification,
-                summary=summary,
-                category=category,
-                date_doc=date_doc,
-            )
+            metas = scan_directory(root)
         except Exception as exc:
-            # Use fallback values if extraction fails
-            console.print(f"[yellow]Попередження: Не вдалося обробити {meta.path.name}: {exc}[/yellow]")
-            file_contexts[meta.path] = FileContext(
-                meta=meta,
-                text=ExtractionResult(text="", source="error", quality=0.0),
-                classification={"category": "інше", "date_doc": None},
-                summary="",
-                category="інше",
-                date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
-            )
-        tracker.increment("extract")
-    update_progress(run_dir, tracker)
+            tracker.stop_visual()
+            console.print(f"[red]Помилка сканування: {exc}[/red]")
+            return
 
-    tracker.set_stage_total("classify", len(metas))
-    tracker.increment("classify", len(metas))
-    update_progress(run_dir, tracker)
+        if not metas:
+            tracker.stop_visual()
+            console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
+            return
 
-    duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
-    duplicates_files_map: Dict[str, List[Path]] = {}
-    for group in exact_groups:
-        canonical = group.canonical()
-        duplicates_files_map[group.group_id] = []
-        ordered_files = sorted(
-            group.files,
-            key=lambda m: (m.path != canonical.path, m.path),
-        )
-        for idx, file_meta in enumerate(ordered_files):
-            info: Dict[str, Optional[str]] = {
-                "dup_type": "exact_dup",
-                "dup_group_id": group.group_id,
-                "dup_rank": f"V{idx + 1}",
-                "dup_master_path": str(canonical.path),
-            }
-            duplicates_map[file_meta.path] = info
-            if file_meta.path != canonical.path:
-                duplicates_files_map[group.group_id].append(file_meta.path)
-
-    rename_candidates = [meta for meta in metas if duplicates_map.get(meta.path, {}).get("dup_rank", "V1") == "V1"]
-    contexts_for_rename: Dict[Path, Dict[str, str]] = {}
-    for meta in rename_candidates:
-        ctx = file_contexts[meta.path]
-        contexts_for_rename[meta.path] = {
-            "category": ctx.category,
-            "yyyy": ctx.date_doc[:4],
-            "mm": ctx.date_doc[5:7],
-            "dd": ctx.date_doc[8:10],
-            "short_title": ctx.summary or meta.path.stem,
-            "version": "01",
-            "hash8": (meta.sha256 or "0" * 8)[:8],
-            "ext": meta.path.suffix,
-        }
-    rename_plans = plan_renames(rename_candidates, cfg.rename_template, contexts_for_rename)
-
-    rows: List[InventoryRow] = []
-    row_map: Dict[Path, InventoryRow] = {}
-    path_to_row: Dict[Path, InventoryRow] = {}
-
-    tracker.set_stage_total("rename", len(rename_plans))
-    renamed_ok = 0
-    renamed_failed = 0
-    for plan in rename_plans:
-        target = plan.meta.path.with_name(plan.new_name)
-        status = "skipped" if mode == "dry-run" else "success"
-        error = ""
-        if mode == "commit":
-            try:
-                plan.meta.path.rename(target)
-                renamed_ok += 1
-            except Exception as exc:
-                status = "failed"
-                error = str(exc)
-                renamed_failed += 1
-                target = plan.meta.path
-        tracker.increment("rename")
-        meta_path = plan.meta.path
-        ctx = file_contexts[meta_path]
-        dup_info = duplicates_map.get(
-            meta_path,
-            {"dup_type": "unique", "dup_group_id": None, "dup_rank": "V1", "dup_master_path": None},
-        )
-        row = InventoryRow(
-            root=str(root),
-            folder_old=str(meta_path.parent),
-            path_old=str(meta_path),
-            name_old=meta_path.name,
-            name_new=target.name,
-            folder_new=str(target.parent),
-            path_new=str(target),
-            sorted=False,
-            sort_strategy=sort_strategy or "",
-            sorted_subfolder="",
-            path_final=str(target),
-            ext=meta_path.suffix.lower(),
-            mime=mimetypes.guess_type(meta_path.name)[0] or "application/octet-stream",
-            size_mb=plan.meta.size / (1024 * 1024),
-            ctime=datetime.fromtimestamp(plan.meta.ctime),
-            mtime=datetime.fromtimestamp(plan.meta.mtime),
-            date_doc=ctx.date_doc,
-            category=ctx.category,
-            short_title=ctx.summary,
-            version="01",
-            hash8=(plan.meta.sha256 or "0" * 8)[:8],
-            content_hash_sha256=plan.meta.sha256 or "",
-            dup_type=dup_info["dup_type"],
-            dup_group_id=dup_info["dup_group_id"],
-            dup_rank=dup_info["dup_rank"],
-            dup_master_path=dup_info["dup_master_path"],
-            near_dup_score=None,
-            lifecycle_state="present",
-            deleted_ts=None,
-            text_source=ctx.text.source,
-            ocr_lang=cfg.ocr_lang,
-            text_len=len(ctx.text.text),
-            extract_quality=ctx.text.quality,
-            llm_used=cfg.llm_enabled,
-            llm_confidence=None,
-            llm_keywords="",
-            summary_200=ctx.summary,
-            rename_status=status,
-            error_message=error,
-            collision=plan.collision,
-            duration_s=0.0,
-            mode=mode,
-        )
-        rows.append(row)
-        row_map[meta_path] = row
-        path_to_row[Path(row.path_new)] = row
-    update_progress(run_dir, tracker)
-
-    for meta in metas:
-        if meta.path in row_map:
-            continue
-        ctx = file_contexts[meta.path]
-        dup_info = duplicates_map.get(
-            meta.path,
-            {"dup_type": "unique", "dup_group_id": None, "dup_rank": "V1", "dup_master_path": None},
-        )
-        row = InventoryRow(
-            root=str(root),
-            folder_old=str(meta.path.parent),
-            path_old=str(meta.path),
-            name_old=meta.path.name,
-            name_new=meta.path.name,
-            folder_new=str(meta.path.parent),
-            path_new=str(meta.path),
-            sorted=False,
-            sort_strategy=sort_strategy or "",
-            sorted_subfolder="",
-            path_final=str(meta.path),
-            ext=meta.path.suffix.lower(),
-            mime=mimetypes.guess_type(meta.path.name)[0] or "application/octet-stream",
-            size_mb=meta.size / (1024 * 1024),
-            ctime=datetime.fromtimestamp(meta.ctime),
-            mtime=datetime.fromtimestamp(meta.mtime),
-            date_doc=ctx.date_doc,
-            category=ctx.category,
-            short_title=ctx.summary,
-            version="01",
-            hash8=(meta.sha256 or "0" * 8)[:8],
-            content_hash_sha256=meta.sha256 or "",
-            dup_type=dup_info["dup_type"],
-            dup_group_id=dup_info["dup_group_id"],
-            dup_rank=dup_info["dup_rank"],
-            dup_master_path=dup_info["dup_master_path"],
-            near_dup_score=None,
-            lifecycle_state="present",
-            deleted_ts=None,
-            text_source=ctx.text.source,
-            ocr_lang=cfg.ocr_lang,
-            text_len=len(ctx.text.text),
-            extract_quality=ctx.text.quality,
-            llm_used=cfg.llm_enabled,
-            llm_confidence=None,
-            llm_keywords="",
-            summary_200=ctx.summary,
-            rename_status="skipped",
-            error_message="",
-            collision=False,
-            duration_s=0.0,
-            mode=mode,
-        )
-        rows.append(row)
-        row_map[meta.path] = row
-        path_to_row[Path(row.path_new)] = row
-
-    deleted_set: set[Path] = set()
-    quarantine_updates: Dict[Path, str] = {}
-    duplicates_flat = [path for paths in duplicates_files_map.values() for path in paths]
-    if mode == "commit" and duplicates_flat:
-        if delete_exact:
-            delete_duplicates(duplicates_flat)
-            deleted_set.update(duplicates_flat)
-        else:
-            mapping = quarantine_files(root, duplicates_files_map)
-            for original, new_path in mapping.items():
-                quarantine_updates[original] = str(new_path)
-
-    sorted_updates: Dict[Path, Path] = {}
-    if mode == "commit" and sort_strategy:
-        excluded = {Path(str(p)) for p in deleted_set.union(quarantine_updates.keys())}
-        sortable_paths = [
-            Path(row.path_new)
-            for row in rows
-            if row.lifecycle_state == "present" and Path(row.path_new) not in excluded
-        ]
-        sorted_mapping = sort_files(root, sortable_paths, sort_strategy, cfg.sorted_root)
-        sorted_updates.update(sorted_mapping)
-
-    if deleted_set or quarantine_updates:
-        now = datetime.now(timezone.utc)
-        for original in deleted_set:
-            row = row_map.get(original)
-            if not row:
-                row = path_to_row.get(original)
-            if not row:
-                continue
-            row.lifecycle_state = "deleted"
-            row.deleted_ts = now
-            row.path_final = ""
-        for original, state in quarantine_updates.items():
-            row = row_map.get(original)
-            if not row:
-                row = path_to_row.get(original)
-            if not row:
-                continue
-            row.lifecycle_state = "quarantined"
-            row.path_final = state
-            path_to_row[Path(state)] = row
-
-    if sorted_updates:
-        for original, new_path in sorted_updates.items():
-            row = path_to_row.get(original)
-            if not row:
-                continue
-            row.sorted = True
-            row.sort_strategy = sort_strategy or ""
-            row.sorted_subfolder = str(Path(new_path).parent)
-            row.path_final = str(new_path)
-            path_to_row[Path(new_path)] = row
-
-    tracker.increment("inventory")
-    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-    summary = RunSummary(
-        run_id=run_id,
-        files_total=len(metas),
-        files_processed=len(rows),
-        renamed_ok=renamed_ok,
-        renamed_failed=renamed_failed,
-        duplicate_groups=len(exact_groups),
-        duplicate_files=len(duplicates_flat),
-        near_duplicate_files=0,
-        quarantined_count=len(quarantine_updates),
-        deleted_count=len(deleted_set),
-        ocr_share=sum(1 for row in rows if row.text_source == "ocr") / len(rows) if rows else 0.0,
-        llm_share=sum(1 for row in rows if row.llm_used) / len(rows) if rows else 0.0,
-        collisions=sum(1 for row in rows if row.collision),
-        duration_total_s=duration,
-        cost_total_usd=0.0,
-        total_size_mb=sum(row.size_mb for row in rows),
-        sorted_enabled=bool(sort_strategy),
-        sorting_strategy=sort_strategy or "",
-        moved_count=len(quarantine_updates) + len(sorted_updates),
-        sorted_root=cfg.sorted_root,
-        excel_updated=True,
-    )
-
-    try:
-        write_inventory(rows, summary, run_dir)
+        tracker.set_stage_total("scan", len(metas))
+        tracker.increment("scan", len(metas))
         update_progress(run_dir, tracker)
-        tracker.stop_visual()
-        console.print(f"\n[green]✓[/green] Завершено. Дані у {run_dir}")
-        console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
-        console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
-        if summary.duplicate_files > 0:
-            console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
+
+        exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
+        tracker.increment("dedup", len(metas))
+        update_progress(run_dir, tracker)
+
+        file_contexts: Dict[Path, FileContext] = {}
+        tracker.set_stage_total("extract", len(metas))
+        for meta in metas:
+            try:
+                ensure_hash(meta)
+                result = extract_text(meta, cfg.ocr_lang)
+                classification = classify_text(result.text)
+                category = classification.get("category") or "інше"
+                date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
+                summary = summarize_text(result.text)
+                file_contexts[meta.path] = FileContext(
+                    meta=meta,
+                    text=result,
+                    classification=classification,
+                    summary=summary,
+                    category=category,
+                    date_doc=date_doc,
+                )
+            except Exception as exc:
+                # Use fallback values if extraction fails
+                console.print(f"[yellow]Попередження: Не вдалося обробити {meta.path.name}: {exc}[/yellow]")
+                file_contexts[meta.path] = FileContext(
+                    meta=meta,
+                    text=ExtractionResult(text="", source="error", quality=0.0),
+                    classification={"category": "інше", "date_doc": None},
+                    summary="",
+                    category="інше",
+                    date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
+                )
+            tracker.increment("extract")
+        update_progress(run_dir, tracker)
+
+        tracker.set_stage_total("classify", len(metas))
+        tracker.increment("classify", len(metas))
+        update_progress(run_dir, tracker)
+
+        duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
+        duplicates_files_map: Dict[str, List[Path]] = {}
+        for group in exact_groups:
+            canonical = group.canonical()
+            duplicates_files_map[group.group_id] = []
+            ordered_files = sorted(
+                group.files,
+                key=lambda m: (m.path != canonical.path, m.path),
+            )
+            for idx, file_meta in enumerate(ordered_files):
+                info: Dict[str, Optional[str]] = {
+                    "dup_type": "exact_dup",
+                    "dup_group_id": group.group_id,
+                    "dup_rank": f"V{idx + 1}",
+                    "dup_master_path": str(canonical.path),
+                }
+                duplicates_map[file_meta.path] = info
+                if file_meta.path != canonical.path:
+                    duplicates_files_map[group.group_id].append(file_meta.path)
+
+        rename_candidates = [meta for meta in metas if duplicates_map.get(meta.path, {}).get("dup_rank", "V1") == "V1"]
+        contexts_for_rename: Dict[Path, Dict[str, str]] = {}
+        for meta in rename_candidates:
+            ctx = file_contexts[meta.path]
+            contexts_for_rename[meta.path] = {
+                "category": ctx.category,
+                "yyyy": ctx.date_doc[:4],
+                "mm": ctx.date_doc[5:7],
+                "dd": ctx.date_doc[8:10],
+                "short_title": ctx.summary or meta.path.stem,
+                "version": 1,  # Число, а не рядок, для форматування :02d
+                "hash8": (meta.sha256 or "0" * 8)[:8],
+                "ext": meta.path.suffix,
+            }
+        rename_plans = plan_renames(rename_candidates, cfg.rename_template, contexts_for_rename)
+
+        rows: List[InventoryRow] = []
+        row_map: Dict[Path, InventoryRow] = {}
+        path_to_row: Dict[Path, InventoryRow] = {}
+
+        tracker.set_stage_total("rename", len(rename_plans))
+        renamed_ok = 0
+        renamed_failed = 0
+        for plan in rename_plans:
+            target = plan.meta.path.with_name(plan.new_name)
+            status = "skipped" if mode == "dry-run" else "success"
+            error = ""
+            if mode == "commit":
+                try:
+                    plan.meta.path.rename(target)
+                    renamed_ok += 1
+                except Exception as exc:
+                    status = "failed"
+                    error = str(exc)
+                    renamed_failed += 1
+                    target = plan.meta.path
+            tracker.increment("rename")
+            meta_path = plan.meta.path
+            ctx = file_contexts[meta_path]
+            dup_info = duplicates_map.get(
+                meta_path,
+                {"dup_type": "unique", "dup_group_id": None, "dup_rank": "V1", "dup_master_path": None},
+            )
+            row = InventoryRow(
+                root=str(root),
+                folder_old=str(meta_path.parent),
+                path_old=str(meta_path),
+                name_old=meta_path.name,
+                name_new=target.name,
+                folder_new=str(target.parent),
+                path_new=str(target),
+                sorted=False,
+                sort_strategy=sort_strategy or "",
+                sorted_subfolder="",
+                path_final=str(target),
+                ext=meta_path.suffix.lower(),
+                mime=mimetypes.guess_type(meta_path.name)[0] or "application/octet-stream",
+                size_mb=plan.meta.size / (1024 * 1024),
+                ctime=datetime.fromtimestamp(plan.meta.ctime),
+                mtime=datetime.fromtimestamp(plan.meta.mtime),
+                date_doc=ctx.date_doc,
+                category=ctx.category,
+                short_title=ctx.summary,
+                version="01",
+                hash8=(plan.meta.sha256 or "0" * 8)[:8],
+                content_hash_sha256=plan.meta.sha256 or "",
+                dup_type=dup_info["dup_type"],
+                dup_group_id=dup_info["dup_group_id"],
+                dup_rank=dup_info["dup_rank"],
+                dup_master_path=dup_info["dup_master_path"],
+                near_dup_score=None,
+                lifecycle_state="present",
+                deleted_ts=None,
+                text_source=ctx.text.source,
+                ocr_lang=cfg.ocr_lang,
+                text_len=len(ctx.text.text),
+                extract_quality=ctx.text.quality,
+                llm_used=cfg.llm_enabled,
+                llm_confidence=None,
+                llm_keywords="",
+                summary_200=ctx.summary,
+                rename_status=status,
+                error_message=error,
+                collision=plan.collision,
+                duration_s=0.0,
+                mode=mode,
+            )
+            rows.append(row)
+            row_map[meta_path] = row
+            path_to_row[Path(row.path_new)] = row
+        update_progress(run_dir, tracker)
+
+        for meta in metas:
+            if meta.path in row_map:
+                continue
+            ctx = file_contexts[meta.path]
+            dup_info = duplicates_map.get(
+                meta.path,
+                {"dup_type": "unique", "dup_group_id": None, "dup_rank": "V1", "dup_master_path": None},
+            )
+            row = InventoryRow(
+                root=str(root),
+                folder_old=str(meta.path.parent),
+                path_old=str(meta.path),
+                name_old=meta.path.name,
+                name_new=meta.path.name,
+                folder_new=str(meta.path.parent),
+                path_new=str(meta.path),
+                sorted=False,
+                sort_strategy=sort_strategy or "",
+                sorted_subfolder="",
+                path_final=str(meta.path),
+                ext=meta.path.suffix.lower(),
+                mime=mimetypes.guess_type(meta.path.name)[0] or "application/octet-stream",
+                size_mb=meta.size / (1024 * 1024),
+                ctime=datetime.fromtimestamp(meta.ctime),
+                mtime=datetime.fromtimestamp(meta.mtime),
+                date_doc=ctx.date_doc,
+                category=ctx.category,
+                short_title=ctx.summary,
+                version="01",
+                hash8=(meta.sha256 or "0" * 8)[:8],
+                content_hash_sha256=meta.sha256 or "",
+                dup_type=dup_info["dup_type"],
+                dup_group_id=dup_info["dup_group_id"],
+                dup_rank=dup_info["dup_rank"],
+                dup_master_path=dup_info["dup_master_path"],
+                near_dup_score=None,
+                lifecycle_state="present",
+                deleted_ts=None,
+                text_source=ctx.text.source,
+                ocr_lang=cfg.ocr_lang,
+                text_len=len(ctx.text.text),
+                extract_quality=ctx.text.quality,
+                llm_used=cfg.llm_enabled,
+                llm_confidence=None,
+                llm_keywords="",
+                summary_200=ctx.summary,
+                rename_status="skipped",
+                error_message="",
+                collision=False,
+                duration_s=0.0,
+                mode=mode,
+            )
+            rows.append(row)
+            row_map[meta.path] = row
+            path_to_row[Path(row.path_new)] = row
+
+        deleted_set: set[Path] = set()
+        quarantine_updates: Dict[Path, str] = {}
+        duplicates_flat = [path for paths in duplicates_files_map.values() for path in paths]
+        if mode == "commit" and duplicates_flat:
+            if delete_exact:
+                delete_duplicates(duplicates_flat)
+                deleted_set.update(duplicates_flat)
+            else:
+                mapping = quarantine_files(root, duplicates_files_map)
+                for original, new_path in mapping.items():
+                    quarantine_updates[original] = str(new_path)
+
+        sorted_updates: Dict[Path, Path] = {}
+        if mode == "commit" and sort_strategy:
+            excluded = {Path(str(p)) for p in deleted_set.union(quarantine_updates.keys())}
+            sortable_paths = [
+                Path(row.path_new)
+                for row in rows
+                if row.lifecycle_state == "present" and Path(row.path_new) not in excluded
+            ]
+            sorted_mapping = sort_files(root, sortable_paths, sort_strategy, cfg.sorted_root)
+            sorted_updates.update(sorted_mapping)
+
+        if deleted_set or quarantine_updates:
+            now = datetime.now(timezone.utc)
+            for original in deleted_set:
+                row = row_map.get(original)
+                if not row:
+                    row = path_to_row.get(original)
+                if not row:
+                    continue
+                row.lifecycle_state = "deleted"
+                row.deleted_ts = now
+                row.path_final = ""
+            for original, state in quarantine_updates.items():
+                row = row_map.get(original)
+                if not row:
+                    row = path_to_row.get(original)
+                if not row:
+                    continue
+                row.lifecycle_state = "quarantined"
+                row.path_final = state
+                path_to_row[Path(state)] = row
+
+        if sorted_updates:
+            for original, new_path in sorted_updates.items():
+                row = path_to_row.get(original)
+                if not row:
+                    continue
+                row.sorted = True
+                row.sort_strategy = sort_strategy or ""
+                row.sorted_subfolder = str(Path(new_path).parent)
+                row.path_final = str(new_path)
+                path_to_row[Path(new_path)] = row
+
+        tracker.increment("inventory")
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        summary = RunSummary(
+            run_id=run_id,
+            files_total=len(metas),
+            files_processed=len(rows),
+            renamed_ok=renamed_ok,
+            renamed_failed=renamed_failed,
+            duplicate_groups=len(exact_groups),
+            duplicate_files=len(duplicates_flat),
+            near_duplicate_files=0,
+            quarantined_count=len(quarantine_updates),
+            deleted_count=len(deleted_set),
+            ocr_share=sum(1 for row in rows if row.text_source == "ocr") / len(rows) if rows else 0.0,
+            llm_share=sum(1 for row in rows if row.llm_used) / len(rows) if rows else 0.0,
+            collisions=sum(1 for row in rows if row.collision),
+            duration_total_s=duration,
+            cost_total_usd=0.0,
+            total_size_mb=sum(row.size_mb for row in rows),
+            sorted_enabled=bool(sort_strategy),
+            sorting_strategy=sort_strategy or "",
+            moved_count=len(quarantine_updates) + len(sorted_updates),
+            sorted_root=cfg.sorted_root,
+            excel_updated=True,
+        )
+
+        try:
+            write_inventory(rows, summary, run_dir)
+            update_progress(run_dir, tracker)
+            tracker.stop_visual()
+            console.print(f"\n[green]✓[/green] Завершено. Дані у {run_dir}")
+            console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
+            console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
+            if summary.duplicate_files > 0:
+                console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
+        except Exception as exc:
+            tracker.stop_visual()
+            console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")
+            return
+
     except Exception as exc:
+        # Глобальна обробка помилок - зупиняємо прогрес-бар
         tracker.stop_visual()
-        console.print(f"[red]Помилка запису інвентаризації: {exc}[/red]")
-        return
+        console.print(f"\n[red]═══ Помилка виконання ═══[/red]")
+        console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+        import traceback
+        console.print(f"\n[dim]Детальна інформація:[/dim]")
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise  # Передаємо помилку вище
 
 
 def update_progress(run_dir: Path, tracker: ProgressTracker) -> None:
