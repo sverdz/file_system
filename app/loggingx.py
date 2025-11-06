@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -39,7 +39,7 @@ def mask_sensitive(text: str) -> str:
 def log_event(run_id: str, category: str, payload: Dict[str, Any]) -> None:
     entry = {
         "run_id": run_id,
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
         "category": category,
     }
     entry.update(payload)

@@ -5,7 +5,7 @@ import json
 import mimetypes
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from app.classify import classify_text, summarize_text
-from app.config import Config, load_config, save_config
+from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
 from app.inventory import InventoryRow, RunSummary, write_inventory
@@ -101,22 +101,111 @@ def main() -> None:
 
 
 def configure(cfg: Config) -> Config:
-    console.print(f"Поточна папка: {cfg.root}")
-    new_root = input("Вкажіть шлях до папки (Enter щоб лишити): ").strip()
+    console.print("\n[bold cyan]═══ Налаштування File Inventory Tool ═══[/bold cyan]\n")
+
+    # Налаштування папки
+    console.print(f"[cyan]1. Папка для аналізу:[/cyan] {cfg.root}")
+    new_root = input("   Вкажіть новий шлях (Enter щоб лишити): ").strip()
     if new_root:
         cfg.root = Path(new_root)
-    console.print(f"Поточна мова OCR: {cfg.ocr_lang}")
-    ocr = input("OCR (ukr+eng/eng/off): ").strip()
+
+    # Налаштування OCR
+    console.print(f"\n[cyan]2. Мова OCR:[/cyan] {cfg.ocr_lang}")
+    ocr = input("   Вкажіть мову (ukr+eng/eng/off, Enter щоб лишити): ").strip()
     if ocr:
         cfg.ocr_lang = ocr
-    console.print(f"LLM увімкнено: {cfg.llm_enabled}")
-    llm = input("Увімкнути LLM? [y/N]: ").strip().lower()
-    if llm in {"y", "yes"}:
-        cfg.llm_enabled = True
-    elif llm in {"n", "no"}:
-        cfg.llm_enabled = False
+
+    # Налаштування LLM
+    console.print(f"\n[cyan]3. LLM налаштування:[/cyan]")
+    console.print(f"   Поточний провайдер: {cfg.llm_provider}")
+    console.print(f"   LLM увімкнено: {cfg.llm_enabled}")
+
+    llm_choice = input("\n   Налаштувати LLM? [y/N]: ").strip().lower()
+    if llm_choice in {"y", "yes"}:
+        console.print("\n   [bold]Оберіть LLM провайдера:[/bold]")
+        console.print("   1 = Claude (Anthropic)")
+        console.print("   2 = ChatGPT (OpenAI)")
+        console.print("   3 = Вимкнути LLM")
+
+        provider_choice = input("   Ваш вибір [1-3]: ").strip()
+
+        if provider_choice == "1":
+            cfg.llm_provider = "claude"
+            cfg.llm_enabled = True
+
+            # API ключ Claude
+            current_key = cfg.llm_api_key_claude
+            if current_key:
+                console.print(f"   Поточний ключ: {current_key[:10]}...{current_key[-4:]}")
+                change = input("   Змінити API ключ? [y/N]: ").strip().lower()
+                if change in {"y", "yes"}:
+                    new_key = input("   Введіть API ключ Claude: ").strip()
+                    if new_key:
+                        cfg.llm_api_key_claude = new_key
+            else:
+                new_key = input("   Введіть API ключ Claude: ").strip()
+                if new_key:
+                    cfg.llm_api_key_claude = new_key
+
+            # Модель
+            console.print("   Рекомендовані моделі:")
+            console.print("   - claude-3-haiku-20240307 (швидка, дешева)")
+            console.print("   - claude-3-sonnet-20240229 (баланс)")
+            console.print("   - claude-3-opus-20240229 (найкраща)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'claude-3-haiku-20240307'}): ").strip()
+            if model:
+                cfg.llm_model = model
+            elif not cfg.llm_model:
+                cfg.llm_model = "claude-3-haiku-20240307"
+
+            # Перевірка підключення
+            if cfg.llm_api_key_claude:
+                console.print("\n   [yellow]Перевірка підключення...[/yellow]")
+                success, message = test_llm_connection("claude", cfg.llm_api_key_claude, cfg.llm_model)
+                console.print(f"   {message}")
+
+        elif provider_choice == "2":
+            cfg.llm_provider = "chatgpt"
+            cfg.llm_enabled = True
+
+            # API ключ OpenAI
+            current_key = cfg.llm_api_key_openai
+            if current_key:
+                console.print(f"   Поточний ключ: {current_key[:10]}...{current_key[-4:]}")
+                change = input("   Змінити API ключ? [y/N]: ").strip().lower()
+                if change in {"y", "yes"}:
+                    new_key = input("   Введіть API ключ OpenAI: ").strip()
+                    if new_key:
+                        cfg.llm_api_key_openai = new_key
+            else:
+                new_key = input("   Введіть API ключ OpenAI: ").strip()
+                if new_key:
+                    cfg.llm_api_key_openai = new_key
+
+            # Модель
+            console.print("   Рекомендовані моделі:")
+            console.print("   - gpt-3.5-turbo (швидка, дешева)")
+            console.print("   - gpt-4 (краща якість)")
+            console.print("   - gpt-4-turbo (найновіша)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-3.5-turbo'}): ").strip()
+            if model:
+                cfg.llm_model = model
+            elif not cfg.llm_model:
+                cfg.llm_model = "gpt-3.5-turbo"
+
+            # Перевірка підключення
+            if cfg.llm_api_key_openai:
+                console.print("\n   [yellow]Перевірка підключення...[/yellow]")
+                success, message = test_llm_connection("chatgpt", cfg.llm_api_key_openai, cfg.llm_model)
+                console.print(f"   {message}")
+
+        elif provider_choice == "3":
+            cfg.llm_provider = "none"
+            cfg.llm_enabled = False
+            console.print("   [yellow]LLM вимкнено[/yellow]")
+
     save_config(cfg)
-    console.print("Налаштування збережено.")
+    console.print("\n[green]✓ Налаштування збережено.[/green]")
     return cfg
 
 
@@ -136,7 +225,7 @@ def show_last_summary() -> None:
 
 
 def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     run_id = start_time.strftime("%Y%m%dT%H%M%S")
     run_dir = Path("runs") / run_id
 
@@ -158,24 +247,32 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         }
     )
 
+    # Запустити візуальний прогрес-бар
+    console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
+    tracker.start_visual()
+
     root = cfg.root_path
 
     # Validate root path exists
     if not root.exists():
+        tracker.stop_visual()
         console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
         return
 
     if not root.is_dir():
+        tracker.stop_visual()
         console.print(f"[red]Помилка: {root} не є директорією[/red]")
         return
 
     try:
         metas = scan_directory(root)
     except Exception as exc:
+        tracker.stop_visual()
         console.print(f"[red]Помилка сканування: {exc}[/red]")
         return
 
     if not metas:
+        tracker.stop_visual()
         console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
         return
 
@@ -415,7 +512,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         sorted_updates.update(sorted_mapping)
 
     if deleted_set or quarantine_updates:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for original in deleted_set:
             row = row_map.get(original)
             if not row:
@@ -447,7 +544,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             path_to_row[Path(new_path)] = row
 
     tracker.increment("inventory")
-    duration = (datetime.utcnow() - start_time).total_seconds()
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     summary = RunSummary(
         run_id=run_id,
         files_total=len(metas),
@@ -475,8 +572,14 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     try:
         write_inventory(rows, summary, run_dir)
         update_progress(run_dir, tracker)
-        console.print(f"[green]✓[/green] Завершено. Дані у {run_dir}")
+        tracker.stop_visual()
+        console.print(f"\n[green]✓[/green] Завершено. Дані у {run_dir}")
+        console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
+        console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
+        if summary.duplicate_files > 0:
+            console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
     except Exception as exc:
+        tracker.stop_visual()
         console.print(f"[red]Помилка запису інвентаризації: {exc}[/red]")
         return
 
