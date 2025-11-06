@@ -53,6 +53,10 @@ class Config(BaseModel):
     sorted_root: str = "_sorted"
     ocr_lang: str = "ukr+eng"
     llm_enabled: bool = False
+    llm_provider: Literal["claude", "chatgpt", "none"] = "none"
+    llm_api_key_claude: str = ""
+    llm_api_key_openai: str = ""
+    llm_model: str = ""  # Наприклад: "claude-3-sonnet-20240229" або "gpt-4"
     threads: int = 0
 
     @property
@@ -103,5 +107,75 @@ def save_config(cfg: Config, run_dir: Optional[Path] = None) -> None:
             yaml.safe_dump(data, f, allow_unicode=True)
 
 
-__all__ = ["Config", "load_config", "save_config"]
+def test_llm_connection(provider: str, api_key: str, model: str = "") -> tuple[bool, str]:
+    """
+    Перевірити підключення до LLM провайдера.
+
+    Returns:
+        tuple[bool, str]: (успіх, повідомлення)
+    """
+    import requests
+
+    if not api_key:
+        return False, "API ключ не вказано"
+
+    try:
+        if provider == "claude":
+            # Перевірка Claude API
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json={
+                    "model": model or "claude-3-haiku-20240307",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "test"}]
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                return True, f"✓ Підключення до Claude успішне (модель: {model or 'claude-3-haiku-20240307'})"
+            elif response.status_code == 401:
+                return False, "✗ Невірний API ключ для Claude"
+            else:
+                return False, f"✗ Помилка підключення до Claude: {response.status_code}"
+
+        elif provider == "chatgpt":
+            # Перевірка OpenAI API
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": model or "gpt-3.5-turbo",
+                    "messages": [{"role": "user", "content": "test"}],
+                    "max_tokens": 10
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                return True, f"✓ Підключення до ChatGPT успішне (модель: {model or 'gpt-3.5-turbo'})"
+            elif response.status_code == 401:
+                return False, "✗ Невірний API ключ для OpenAI"
+            else:
+                return False, f"✗ Помилка підключення до OpenAI: {response.status_code}"
+        else:
+            return False, f"✗ Невідомий провайдер: {provider}"
+
+    except requests.exceptions.Timeout:
+        return False, "✗ Таймаут підключення. Перевірте інтернет з'єднання"
+    except requests.exceptions.ConnectionError:
+        return False, "✗ Немає інтернет з'єднання"
+    except Exception as e:
+        return False, f"✗ Помилка: {str(e)}"
+
+
+__all__ = ["Config", "load_config", "save_config", "test_llm_connection"]
 
