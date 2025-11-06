@@ -21,13 +21,13 @@ from app.classify import classify_text, summarize_text
 from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
-from app.inventory import InventoryRow, RunSummary, write_inventory
+from app.inventory import InventoryRow, RunSummary, write_inventory, find_latest_run, read_inventory, update_inventory_after_sort
 from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
 from app.scan import FileMeta, ensure_hash, scan_directory
-from app.sortout import delete_duplicates, quarantine_files, sort_files
+from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
 
 colorama_init()
 console = Console()
@@ -85,7 +85,7 @@ def main() -> None:
             elif choice == "5":
                 console.print("Відновлення ще не реалізоване у цій версії.")
             elif choice == "6":
-                console.print("Перегенерація подань буде виконана при наступному запуску.")
+                sort_and_organize(cfg)
             elif choice == "7":
                 deps.ensure_ready()
             elif choice == "8":
@@ -226,6 +226,101 @@ def show_last_summary() -> None:
     summary_path = latest / "inventory.xlsx"
     console.print(f"Останній запуск: {latest.name}")
     console.print(f"Файл інвентаризації: {summary_path}")
+
+
+def sort_and_organize(cfg: Config) -> None:
+    """Окреме меню для сортування та організації файлів."""
+    console.print("\n[bold cyan]═══ Сортування та організація файлів ═══[/bold cyan]\n")
+
+    # Знайти останній запуск
+    latest_run = find_latest_run()
+    if not latest_run:
+        console.print("[red]Помилка: Немає жодного запуску. Спочатку виконайте аналіз (пункт 1).[/red]")
+        return
+
+    console.print(f"[green]✓[/green] Використовується запуск: {latest_run.name}")
+
+    # Прочитати інвентаризацію
+    try:
+        df = read_inventory(latest_run)
+        console.print(f"[green]✓[/green] Завантажено {len(df)} записів")
+    except Exception as e:
+        console.print(f"[red]Помилка читання інвентаризації: {e}[/red]")
+        return
+
+    # Меню опцій
+    console.print("\n[bold]Оберіть дію:[/bold]")
+    console.print("[1] Сортувати файли за категоріями")
+    console.print("[2] Сортувати файли за датами")
+    console.print("[3] Сортувати файли за типами")
+    console.print("[4] Об'єднати всі файли з підпапок в одну папку")
+    console.print("[5] Повернутися до головного меню")
+
+    choice = input("\nВаш вибір: ").strip()
+
+    root = cfg.root_path
+    file_updates: Dict[str, str] = {}
+
+    try:
+        if choice == "1":
+            # Сортування за категоріями
+            console.print("\n[cyan]Сортування за категоріями...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_category", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за категоріями")
+
+        elif choice == "2":
+            # Сортування за датами
+            console.print("\n[cyan]Сортування за датами...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_date", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за датами")
+
+        elif choice == "3":
+            # Сортування за типами
+            console.print("\n[cyan]Сортування за типами файлів...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_type", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за типами")
+
+        elif choice == "4":
+            # Об'єднання файлів
+            console.print("\n[cyan]Об'єднання файлів з підпапок...[/cyan]")
+            target_name = input("Назва цільової папки (Enter для '_flattened'): ").strip() or "_flattened"
+            target_dir = root / target_name
+
+            console.print(f"[yellow]Всі файли з {root} будуть переміщені в {target_dir}[/yellow]")
+            confirm = input("Продовжити? [y/N]: ").strip().lower()
+
+            if confirm in {"y", "yes"}:
+                mapping = flatten_directory(root, target_dir, recursive=True)
+                file_updates = {str(k): str(v) for k, v in mapping.items()}
+                console.print(f"[green]✓[/green] Об'єднано {len(mapping)} файлів в {target_dir}")
+            else:
+                console.print("[yellow]Скасовано[/yellow]")
+                return
+
+        elif choice == "5":
+            return
+
+        else:
+            console.print("[yellow]Невірний вибір[/yellow]")
+            return
+
+        # Оновити інвентаризацію
+        if file_updates:
+            console.print("\n[cyan]Оновлення інвентаризації...[/cyan]")
+            strategy = {"1": "by_category", "2": "by_date", "3": "by_type", "4": "flattened"}.get(choice, "manual")
+            update_inventory_after_sort(latest_run, file_updates, strategy)
+            console.print(f"[green]✓[/green] Інвентаризація оновлена: {latest_run / 'inventory.xlsx'}")
+
+    except Exception as e:
+        console.print(f"\n[red]Помилка виконання: {e}[/red]")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
