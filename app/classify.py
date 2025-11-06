@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Dict, Optional
+import requests
 
 CATEGORY_KEYWORDS = {
     "договір": ["договір", "contract"],

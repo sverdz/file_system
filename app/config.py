@@ -9,7 +9,8 @@ from typing import Any, Dict, Optional, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 CONFIG_VERSION = "1.0"
-DEFAULT_TEMPLATE = "{category}_{yyyy}-{mm}-{dd}_{short_title}_v{version:02d}_[{hash8}]{ext}"
+DEFAULT_TEMPLATE = "{yyyy}-{mm}-{dd}_{category}{ext}"
+MAX_FILENAME_LENGTH = 20  # Максимальна довжина назви файлу без розширення
 DEFAULT_CATEGORY_MAP = [
     "договір",
     "рахунок",

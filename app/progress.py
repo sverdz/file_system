@@ -53,10 +53,25 @@ class ProgressTracker:
             stage_name_ua = self._translate_stage(stage_name)
             task_id = self.progress.add_task(
                 f"[cyan]{stage_name_ua}",
-                total=100,  # Буде оновлено пізніше
-                visible=True
+                total=1,  # Початкове значення
+                visible=True,
+                completed=0
             )
             self.task_ids[stage_name] = task_id
+
+    def set_all_totals(self, total: int) -> None:
+        """Встановити total для всіх етапів після сканування"""
+        for stage in self.stages.keys():
+            self.set_stage_total(stage, total)
+
+    def update_description(self, stage: str, detail: str) -> None:
+        """Оновити опис етапу з деталями"""
+        if self.progress and stage in self.task_ids:
+            stage_name_ua = self._translate_stage(stage)
+            self.progress.update(
+                self.task_ids[stage],
+                description=f"[cyan]{stage_name_ua}[/cyan] [dim]{detail}[/dim]"
+            )
 
     def stop_visual(self) -> None:
         """Зупинити візуальний прогрес-бар"""

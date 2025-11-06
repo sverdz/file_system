@@ -280,17 +280,23 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
             return
 
+        # Після сканування встановлюємо total для всіх етапів
+        tracker.set_all_totals(len(metas))
         tracker.set_stage_total("scan", len(metas))
         tracker.increment("scan", len(metas))
+        tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
         update_progress(run_dir, tracker)
 
+        tracker.update_description("dedup", "Аналіз дублікатів...")
         exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
         tracker.increment("dedup", len(metas))
+        tracker.update_description("dedup", f"Знайдено {len(exact_groups)} груп дублікатів")
         update_progress(run_dir, tracker)
 
         file_contexts: Dict[Path, FileContext] = {}
         tracker.set_stage_total("extract", len(metas))
-        for meta in metas:
+        for idx, meta in enumerate(metas, 1):
+            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
             try:
                 ensure_hash(meta)
                 result = extract_text(meta, cfg.ocr_lang)
@@ -322,6 +328,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
         tracker.set_stage_total("classify", len(metas))
         tracker.increment("classify", len(metas))
+        tracker.update_description("classify", "Класифікацію завершено")
         update_progress(run_dir, tracker)
 
         duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
@@ -348,14 +355,13 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         contexts_for_rename: Dict[Path, Dict[str, str]] = {}
         for meta in rename_candidates:
             ctx = file_contexts[meta.path]
+            # Обмежуємо категорію до 15 символів щоб вмістити дату (10 символів) + розділювач
+            category_short = ctx.category[:15] if ctx.category else "інше"
             contexts_for_rename[meta.path] = {
-                "category": ctx.category,
+                "category": category_short,
                 "yyyy": ctx.date_doc[:4],
                 "mm": ctx.date_doc[5:7],
                 "dd": ctx.date_doc[8:10],
-                "short_title": ctx.summary or meta.path.stem,
-                "version": 1,  # Число, а не рядок, для форматування :02d
-                "hash8": (meta.sha256 or "0" * 8)[:8],
                 "ext": meta.path.suffix,
             }
         rename_plans = plan_renames(rename_candidates, cfg.rename_template, contexts_for_rename)
@@ -367,7 +373,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tracker.set_stage_total("rename", len(rename_plans))
         renamed_ok = 0
         renamed_failed = 0
-        for plan in rename_plans:
+        for idx, plan in enumerate(rename_plans, 1):
+            tracker.update_description("rename", f"{plan.meta.path.name} → {plan.new_name} ({idx}/{len(rename_plans)})")
             target = plan.meta.path.with_name(plan.new_name)
             status = "skipped" if mode == "dry-run" else "success"
             error = ""
