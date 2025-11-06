@@ -43,48 +43,61 @@ class FileContext:
 
 
 def main() -> None:
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except Exception as exc:
+        console.print(f"[red]Помилка завантаження конфігурації: {exc}[/red]")
+        console.print("Використовуємо налаштування за замовчуванням.")
+        cfg = Config()
+
     while True:
-        console.print("\n[bold cyan]File Inventory Tool[/bold cyan]")
-        console.print("[1] Швидкий аналіз (dry-run)")
-        console.print("[2] Застосувати перейменування (commit)")
-        console.print("[3] Переглянути підсумок останнього запуску")
-        console.print("[4] Налаштування")
-        console.print("[5] Відновити незавершений запуск")
-        console.print("[6] Сортування та подання")
-        console.print("[7] Перевірити/переінсталювати залежності")
-        console.print("[8] Вихід")
-        choice = input("Оберіть опцію: ").strip()
-        if choice == "1":
-            execute_pipeline(cfg, mode="dry-run")
-        elif choice == "2":
-            confirm = input("Виконати перейменування? [Y/n] ").strip().lower()
-            if confirm in {"", "y", "yes"}:
-                delete_choice = input("Видаляти точні дублікати замість карантину? [Y/n] ").strip().lower()
-                delete_exact = delete_choice in {"", "y", "yes"}
-                sort_choice = input("Сортувати файли по підпапках? [Y/n] ").strip().lower()
-                sort_strategy = None
-                if sort_choice in {"", "y", "yes"}:
-                    console.print("1 = by_category, 2 = by_date, 3 = by_type")
-                    mapping = {"1": "by_category", "2": "by_date", "3": "by_type"}
-                    selected = input("Оберіть стратегію: ").strip()
-                    sort_strategy = mapping.get(selected)
-                execute_pipeline(cfg, mode="commit", delete_exact=delete_exact, sort_strategy=sort_strategy)
-        elif choice == "3":
-            show_last_summary()
-        elif choice == "4":
-            cfg = configure(cfg)
-        elif choice == "5":
-            console.print("Відновлення ще не реалізоване у цій версії.")
-        elif choice == "6":
-            console.print("Перегенерація подань буде виконана при наступному запуску.")
-        elif choice == "7":
-            deps.ensure_ready()
-        elif choice == "8":
-            console.print("До побачення!")
+        try:
+            console.print("\n[bold cyan]File Inventory Tool[/bold cyan]")
+            console.print("[1] Швидкий аналіз (dry-run)")
+            console.print("[2] Застосувати перейменування (commit)")
+            console.print("[3] Переглянути підсумок останнього запуску")
+            console.print("[4] Налаштування")
+            console.print("[5] Відновити незавершений запуск")
+            console.print("[6] Сортування та подання")
+            console.print("[7] Перевірити/переінсталювати залежності")
+            console.print("[8] Вихід")
+            choice = input("Оберіть опцію: ").strip()
+            if choice == "1":
+                execute_pipeline(cfg, mode="dry-run")
+            elif choice == "2":
+                confirm = input("Виконати перейменування? [Y/n] ").strip().lower()
+                if confirm in {"", "y", "yes"}:
+                    delete_choice = input("Видаляти точні дублікати замість карантину? [Y/n] ").strip().lower()
+                    delete_exact = delete_choice in {"", "y", "yes"}
+                    sort_choice = input("Сортувати файли по підпапках? [Y/n] ").strip().lower()
+                    sort_strategy = None
+                    if sort_choice in {"", "y", "yes"}:
+                        console.print("1 = by_category, 2 = by_date, 3 = by_type")
+                        mapping = {"1": "by_category", "2": "by_date", "3": "by_type"}
+                        selected = input("Оберіть стратегію: ").strip()
+                        sort_strategy = mapping.get(selected)
+                    execute_pipeline(cfg, mode="commit", delete_exact=delete_exact, sort_strategy=sort_strategy)
+            elif choice == "3":
+                show_last_summary()
+            elif choice == "4":
+                cfg = configure(cfg)
+            elif choice == "5":
+                console.print("Відновлення ще не реалізоване у цій версії.")
+            elif choice == "6":
+                console.print("Перегенерація подань буде виконана при наступному запуску.")
+            elif choice == "7":
+                deps.ensure_ready()
+            elif choice == "8":
+                console.print("До побачення!")
+                break
+            else:
+                console.print("[yellow]Невірний вибір. Спробуйте ще раз.[/yellow]")
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Переривання... Зберігаю прогрес...[/yellow]")
             break
-        else:
-            console.print("Невірний вибір.")
+        except Exception as exc:
+            console.print(f"[red]Неочікувана помилка: {exc}[/red]")
+            console.print("Можна продовжити або вийти (8).")
 
 
 def configure(cfg: Config) -> Config:
@@ -126,8 +139,14 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     start_time = datetime.utcnow()
     run_id = start_time.strftime("%Y%m%dT%H%M%S")
     run_dir = Path("runs") / run_id
-    setup_logging(run_dir)
-    save_config(cfg, run_dir)
+
+    try:
+        setup_logging(run_dir)
+        save_config(cfg, run_dir)
+    except Exception as exc:
+        console.print(f"[red]Помилка ініціалізації: {exc}[/red]")
+        return
+
     tracker = ProgressTracker(
         {
             "scan": 1.0,
@@ -140,7 +159,26 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     )
 
     root = cfg.root_path
-    metas = scan_directory(root)
+
+    # Validate root path exists
+    if not root.exists():
+        console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
+        return
+
+    if not root.is_dir():
+        console.print(f"[red]Помилка: {root} не є директорією[/red]")
+        return
+
+    try:
+        metas = scan_directory(root)
+    except Exception as exc:
+        console.print(f"[red]Помилка сканування: {exc}[/red]")
+        return
+
+    if not metas:
+        console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
+        return
+
     tracker.set_stage_total("scan", len(metas))
     tracker.increment("scan", len(metas))
     update_progress(run_dir, tracker)
@@ -152,20 +190,32 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
     file_contexts: Dict[Path, FileContext] = {}
     tracker.set_stage_total("extract", len(metas))
     for meta in metas:
-        ensure_hash(meta)
-        result = extract_text(meta, cfg.ocr_lang)
-        classification = classify_text(result.text)
-        category = classification.get("category") or "інше"
-        date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
-        summary = summarize_text(result.text)
-        file_contexts[meta.path] = FileContext(
-            meta=meta,
-            text=result,
-            classification=classification,
-            summary=summary,
-            category=category,
-            date_doc=date_doc,
-        )
+        try:
+            ensure_hash(meta)
+            result = extract_text(meta, cfg.ocr_lang)
+            classification = classify_text(result.text)
+            category = classification.get("category") or "інше"
+            date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
+            summary = summarize_text(result.text)
+            file_contexts[meta.path] = FileContext(
+                meta=meta,
+                text=result,
+                classification=classification,
+                summary=summary,
+                category=category,
+                date_doc=date_doc,
+            )
+        except Exception as exc:
+            # Use fallback values if extraction fails
+            console.print(f"[yellow]Попередження: Не вдалося обробити {meta.path.name}: {exc}[/yellow]")
+            file_contexts[meta.path] = FileContext(
+                meta=meta,
+                text=ExtractionResult(text="", source="error", quality=0.0),
+                classification={"category": "інше", "date_doc": None},
+                summary="",
+                category="інше",
+                date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
+            )
         tracker.increment("extract")
     update_progress(run_dir, tracker)
 
@@ -421,9 +471,14 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         sorted_root=cfg.sorted_root,
         excel_updated=True,
     )
-    write_inventory(rows, summary, run_dir)
-    update_progress(run_dir, tracker)
-    console.print(f"Завершено. Дані у {run_dir}")
+
+    try:
+        write_inventory(rows, summary, run_dir)
+        update_progress(run_dir, tracker)
+        console.print(f"[green]✓[/green] Завершено. Дані у {run_dir}")
+    except Exception as exc:
+        console.print(f"[red]Помилка запису інвентаризації: {exc}[/red]")
+        return
 
 
 def update_progress(run_dir: Path, tracker: ProgressTracker) -> None:
