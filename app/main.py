@@ -21,12 +21,13 @@ from app.classify import classify_text, summarize_text
 from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
-from app.inventory import InventoryRow, RunSummary, write_inventory
+from app.inventory import InventoryRow, RunSummary, write_inventory, find_latest_run, read_inventory, update_inventory_after_sort
+from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
 from app.scan import FileMeta, ensure_hash, scan_directory
-from app.sortout import delete_duplicates, quarantine_files, sort_files
+from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
 
 colorama_init()
 console = Console()
@@ -84,7 +85,7 @@ def main() -> None:
             elif choice == "5":
                 console.print("Відновлення ще не реалізоване у цій версії.")
             elif choice == "6":
-                console.print("Перегенерація подань буде виконана при наступному запуску.")
+                sort_and_organize(cfg)
             elif choice == "7":
                 deps.ensure_ready()
             elif choice == "8":
@@ -152,14 +153,14 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - claude-3-haiku-20240307 (швидка, дешева)")
-            console.print("   - claude-3-sonnet-20240229 (баланс)")
-            console.print("   - claude-3-opus-20240229 (найкраща)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'claude-3-haiku-20240307'}): ").strip()
+            console.print("   - claude-3-5-haiku-20241022 (швидка, дешева)")
+            console.print("   - claude-3-5-sonnet-20241022 (найкраща для більшості)")
+            console.print("   - claude-3-opus-20240229 (найпотужніша)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'claude-3-5-haiku-20241022'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "claude-3-haiku-20240307"
+                cfg.llm_model = "claude-3-5-haiku-20241022"
 
             # Перевірка підключення
             if cfg.llm_api_key_claude:
@@ -187,14 +188,14 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - gpt-3.5-turbo (швидка, дешева)")
-            console.print("   - gpt-4 (краща якість)")
-            console.print("   - gpt-4-turbo (найновіша)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-3.5-turbo'}): ").strip()
+            console.print("   - gpt-4o-mini (швидка, дешева)")
+            console.print("   - gpt-4o (найкраща multimodal)")
+            console.print("   - gpt-4-turbo (попередня топова)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-4o-mini'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "gpt-3.5-turbo"
+                cfg.llm_model = "gpt-4o-mini"
 
             # Перевірка підключення
             if cfg.llm_api_key_openai:
@@ -225,6 +226,101 @@ def show_last_summary() -> None:
     summary_path = latest / "inventory.xlsx"
     console.print(f"Останній запуск: {latest.name}")
     console.print(f"Файл інвентаризації: {summary_path}")
+
+
+def sort_and_organize(cfg: Config) -> None:
+    """Окреме меню для сортування та організації файлів."""
+    console.print("\n[bold cyan]═══ Сортування та організація файлів ═══[/bold cyan]\n")
+
+    # Знайти останній запуск
+    latest_run = find_latest_run()
+    if not latest_run:
+        console.print("[red]Помилка: Немає жодного запуску. Спочатку виконайте аналіз (пункт 1).[/red]")
+        return
+
+    console.print(f"[green]✓[/green] Використовується запуск: {latest_run.name}")
+
+    # Прочитати інвентаризацію
+    try:
+        df = read_inventory(latest_run)
+        console.print(f"[green]✓[/green] Завантажено {len(df)} записів")
+    except Exception as e:
+        console.print(f"[red]Помилка читання інвентаризації: {e}[/red]")
+        return
+
+    # Меню опцій
+    console.print("\n[bold]Оберіть дію:[/bold]")
+    console.print("[1] Сортувати файли за категоріями")
+    console.print("[2] Сортувати файли за датами")
+    console.print("[3] Сортувати файли за типами")
+    console.print("[4] Об'єднати всі файли з підпапок в одну папку")
+    console.print("[5] Повернутися до головного меню")
+
+    choice = input("\nВаш вибір: ").strip()
+
+    root = cfg.root_path
+    file_updates: Dict[str, str] = {}
+
+    try:
+        if choice == "1":
+            # Сортування за категоріями
+            console.print("\n[cyan]Сортування за категоріями...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_category", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за категоріями")
+
+        elif choice == "2":
+            # Сортування за датами
+            console.print("\n[cyan]Сортування за датами...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_date", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за датами")
+
+        elif choice == "3":
+            # Сортування за типами
+            console.print("\n[cyan]Сортування за типами файлів...[/cyan]")
+            files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
+            mapping = sort_files(root, files_to_sort, "by_type", cfg.sorted_root)
+            file_updates = {str(k): str(v) for k, v in mapping.items()}
+            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за типами")
+
+        elif choice == "4":
+            # Об'єднання файлів
+            console.print("\n[cyan]Об'єднання файлів з підпапок...[/cyan]")
+            target_name = input("Назва цільової папки (Enter для '_flattened'): ").strip() or "_flattened"
+            target_dir = root / target_name
+
+            console.print(f"[yellow]Всі файли з {root} будуть переміщені в {target_dir}[/yellow]")
+            confirm = input("Продовжити? [y/N]: ").strip().lower()
+
+            if confirm in {"y", "yes"}:
+                mapping = flatten_directory(root, target_dir, recursive=True)
+                file_updates = {str(k): str(v) for k, v in mapping.items()}
+                console.print(f"[green]✓[/green] Об'єднано {len(mapping)} файлів в {target_dir}")
+            else:
+                console.print("[yellow]Скасовано[/yellow]")
+                return
+
+        elif choice == "5":
+            return
+
+        else:
+            console.print("[yellow]Невірний вибір[/yellow]")
+            return
+
+        # Оновити інвентаризацію
+        if file_updates:
+            console.print("\n[cyan]Оновлення інвентаризації...[/cyan]")
+            strategy = {"1": "by_category", "2": "by_date", "3": "by_type", "4": "flattened"}.get(choice, "manual")
+            update_inventory_after_sort(latest_run, file_updates, strategy)
+            console.print(f"[green]✓[/green] Інвентаризація оновлена: {latest_run / 'inventory.xlsx'}")
+
+    except Exception as e:
+        console.print(f"\n[red]Помилка виконання: {e}[/red]")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
@@ -268,6 +364,30 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print(f"[red]Помилка: {root} не є директорією[/red]")
             return
 
+        # Створити LLM клієнт якщо увімкнено
+        llm_client = None
+        if cfg.llm_enabled and cfg.llm_provider != "none":
+            api_key = ""
+            if cfg.llm_provider == "claude":
+                api_key = cfg.llm_api_key_claude
+            elif cfg.llm_provider == "chatgpt":
+                api_key = cfg.llm_api_key_openai
+
+            if api_key:
+                llm_client = LLMClient(
+                    provider=cfg.llm_provider,
+                    api_key=api_key,
+                    model=cfg.llm_model,
+                    enabled=True,
+                )
+                console.print(
+                    f"[green]✓[/green] LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})"
+                )
+            else:
+                console.print(
+                    f"[yellow]⚠[/yellow] LLM увімкнено але API ключ не налаштовано"
+                )
+
         try:
             metas = scan_directory(root)
         except Exception as exc:
@@ -280,24 +400,32 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
             return
 
+        # Після сканування встановлюємо total для всіх етапів
+        tracker.set_all_totals(len(metas))
         tracker.set_stage_total("scan", len(metas))
         tracker.increment("scan", len(metas))
+        tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
         update_progress(run_dir, tracker)
 
+        tracker.update_description("dedup", "Аналіз дублікатів...")
         exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
         tracker.increment("dedup", len(metas))
+        tracker.update_description("dedup", f"Знайдено {len(exact_groups)} груп дублікатів")
         update_progress(run_dir, tracker)
 
         file_contexts: Dict[Path, FileContext] = {}
         tracker.set_stage_total("extract", len(metas))
-        for meta in metas:
+        for idx, meta in enumerate(metas, 1):
+            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
             try:
                 ensure_hash(meta)
                 result = extract_text(meta, cfg.ocr_lang)
-                classification = classify_text(result.text)
+                # Використовуємо LLM для класифікації якщо доступний
+                classification = classify_text(result.text, llm_client=llm_client)
                 category = classification.get("category") or "інше"
                 date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
-                summary = summarize_text(result.text)
+                # Якщо LLM повернув summary, використовуємо його
+                summary = classification.get("summary") or summarize_text(result.text, llm_client=llm_client)
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=result,
@@ -322,6 +450,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
         tracker.set_stage_total("classify", len(metas))
         tracker.increment("classify", len(metas))
+        tracker.update_description("classify", "Класифікацію завершено")
         update_progress(run_dir, tracker)
 
         duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
@@ -348,14 +477,13 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         contexts_for_rename: Dict[Path, Dict[str, str]] = {}
         for meta in rename_candidates:
             ctx = file_contexts[meta.path]
+            # Обмежуємо категорію до 15 символів щоб вмістити дату (10 символів) + розділювач
+            category_short = ctx.category[:15] if ctx.category else "інше"
             contexts_for_rename[meta.path] = {
-                "category": ctx.category,
+                "category": category_short,
                 "yyyy": ctx.date_doc[:4],
                 "mm": ctx.date_doc[5:7],
                 "dd": ctx.date_doc[8:10],
-                "short_title": ctx.summary or meta.path.stem,
-                "version": 1,  # Число, а не рядок, для форматування :02d
-                "hash8": (meta.sha256 or "0" * 8)[:8],
                 "ext": meta.path.suffix,
             }
         rename_plans = plan_renames(rename_candidates, cfg.rename_template, contexts_for_rename)
@@ -367,7 +495,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tracker.set_stage_total("rename", len(rename_plans))
         renamed_ok = 0
         renamed_failed = 0
-        for plan in rename_plans:
+        for idx, plan in enumerate(rename_plans, 1):
+            tracker.update_description("rename", f"{plan.meta.path.name} → {plan.new_name} ({idx}/{len(rename_plans)})")
             target = plan.meta.path.with_name(plan.new_name)
             status = "skipped" if mode == "dry-run" else "success"
             error = ""
@@ -582,6 +711,15 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
             if summary.duplicate_files > 0:
                 console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
+
+            # Статистика LLM
+            if llm_client:
+                stats = llm_client.get_stats()
+                if stats["requests"] > 0:
+                    console.print(
+                        f"[magenta]🤖 LLM запитів:[/magenta] {stats['requests']}, "
+                        f"[magenta]токенів:[/magenta] {stats['tokens']}"
+                    )
         except Exception as exc:
             tracker.stop_visual()
             console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")

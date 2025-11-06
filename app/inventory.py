@@ -109,5 +109,71 @@ def write_inventory(rows: Iterable[InventoryRow], summary: RunSummary, run_dir: 
         summary_df.to_excel(writer, sheet_name="run_summary", index=False)
 
 
-__all__ = ["InventoryRow", "RunSummary", "write_inventory"]
+def read_inventory(run_dir: Path) -> pd.DataFrame:
+    """Прочитати інвентаризацію з Excel файлу."""
+    xlsx_path = run_dir / "inventory.xlsx"
+    if not xlsx_path.exists():
+        raise FileNotFoundError(f"Інвентаризація не знайдена: {xlsx_path}")
+
+    df = pd.read_excel(xlsx_path, sheet_name="inventory")
+    return df
+
+
+def find_latest_run() -> Path | None:
+    """Знайти останній запуск в папці runs."""
+    runs_dir = Path("runs")
+    if not runs_dir.exists():
+        return None
+
+    run_dirs = sorted([p for p in runs_dir.iterdir() if p.is_dir()])
+    if not run_dirs:
+        return None
+
+    return run_dirs[-1]
+
+
+def update_inventory_after_sort(
+    run_dir: Path,
+    file_updates: Dict[str, str],  # {old_path: new_path}
+    sort_strategy: str,
+) -> None:
+    """
+    Оновити інвентаризацію після сортування файлів.
+
+    Args:
+        run_dir: Директорія запуску
+        file_updates: Мапа старих шляхів на нові
+        sort_strategy: Стратегія сортування
+    """
+    df = read_inventory(run_dir)
+
+    # Оновити записи про файли
+    for old_path, new_path in file_updates.items():
+        mask = df["path_final"] == old_path
+        if mask.any():
+            df.loc[mask, "path_final"] = new_path
+            df.loc[mask, "sorted"] = True
+            df.loc[mask, "sort_strategy"] = sort_strategy
+            df.loc[mask, "sorted_subfolder"] = str(Path(new_path).parent)
+
+    # Перезаписати Excel з оновленими даними
+    rows = []
+    for _, row_dict in df.iterrows():
+        rows.append(InventoryRow(**row_dict))
+
+    # Читаємо summary
+    summary_df = pd.read_excel(run_dir / "inventory.xlsx", sheet_name="run_summary")
+    summary_dict = summary_df.iloc[0].to_dict()
+    summary = RunSummary(**summary_dict)
+
+    # Оновлюємо статистику
+    summary.sorted_enabled = True
+    summary.sorting_strategy = sort_strategy
+    summary.moved_count = len(file_updates)
+
+    # Перезаписуємо
+    write_inventory(rows, summary, run_dir)
+
+
+__all__ = ["InventoryRow", "RunSummary", "write_inventory", "read_inventory", "find_latest_run", "update_inventory_after_sort"]
 

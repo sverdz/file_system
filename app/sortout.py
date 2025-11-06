@@ -75,5 +75,58 @@ def sort_files(root: Path, files: Iterable[Path], strategy: str, sorted_root: st
     return mapping
 
 
-__all__ = ["quarantine_files", "quarantine_near_duplicates", "delete_duplicates", "sort_files"]
+def flatten_directory(root: Path, target_dir: Path, recursive: bool = True) -> Dict[Path, Path]:
+    """
+    Об'єднати всі файли з підпапок в одну папку.
+
+    Args:
+        root: Кореневадиректорія для пошуку файлів
+        target_dir: Цільова директорія куди переміщувати файли
+        recursive: Рекурсивний пошук в підпапках
+
+    Returns:
+        Мапа {старий_шлях: новий_шлях}
+    """
+    mapping: Dict[Path, Path] = {}
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Знайти всі файли
+    if recursive:
+        files = [f for f in root.rglob("*") if f.is_file()]
+    else:
+        files = [f for f in root.glob("*") if f.is_file()]
+
+    # Переміщення файлів з обробкою колізій
+    for file_path in files:
+        # Пропускаємо якщо вже в цільовій папці
+        if file_path.parent == target_dir:
+            continue
+
+        target_path = target_dir / file_path.name
+
+        # Обробка колізій імен
+        if target_path.exists():
+            # Додаємо суфікс з номером
+            counter = 1
+            stem = file_path.stem
+            suffix = file_path.suffix
+            while target_path.exists():
+                target_path = target_dir / f"{stem}_{counter:02d}{suffix}"
+                counter += 1
+
+        try:
+            # Спробувати перемістити
+            file_path.rename(target_path)
+        except OSError:
+            # Якщо не вдалося (наприклад, різні диски), копіюємо і видаляємо
+            shutil.copy2(str(file_path), str(target_path))
+            file_path.unlink()
+
+        mapping[file_path] = target_path
+        log_readable(f"Об'єднано: {file_path} → {target_path}")
+
+    return mapping
+
+
+__all__ = ["quarantine_files", "quarantine_near_duplicates", "delete_duplicates", "sort_files", "flatten_directory"]
 
