@@ -29,6 +29,7 @@ from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
 from app.scan import FileMeta, ensure_hash, scan_directory
+from app.session import SessionManager
 from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
 
 colorama_init()
@@ -66,7 +67,7 @@ def main() -> None:
             console.print("[8] Вихід")
             choice = input("Оберіть опцію: ").strip()
             if choice == "1":
-                execute_pipeline(cfg, mode="dry-run")
+                execute_pipeline(cfg, mode="dry-run", operation_type="SCAN")
             elif choice == "2":
                 confirm = input("Виконати перейменування? [Y/n] ").strip().lower()
                 if confirm in {"", "y", "yes"}:
@@ -74,12 +75,15 @@ def main() -> None:
                     delete_exact = delete_choice in {"", "y", "yes"}
                     sort_choice = input("Сортувати файли по підпапках? [Y/n] ").strip().lower()
                     sort_strategy = None
+                    operation_type = "RENAME"
                     if sort_choice in {"", "y", "yes"}:
                         console.print("1 = by_category, 2 = by_date, 3 = by_type")
                         mapping = {"1": "by_category", "2": "by_date", "3": "by_type"}
                         selected = input("Оберіть стратегію: ").strip()
                         sort_strategy = mapping.get(selected)
-                    execute_pipeline(cfg, mode="commit", delete_exact=delete_exact, sort_strategy=sort_strategy)
+                        if sort_strategy:
+                            operation_type = "RENAME_SORT"
+                    execute_pipeline(cfg, mode="commit", operation_type=operation_type, delete_exact=delete_exact, sort_strategy=sort_strategy)
             elif choice == "3":
                 show_last_summary()
             elif choice == "4":
@@ -217,35 +221,57 @@ def configure(cfg: Config) -> Config:
 
 
 def show_last_summary() -> None:
-    runs_dir = Path("runs")
-    if not runs_dir.exists():
-        console.print("Немає запусків.")
+    """Показати підсумок останньої сесії."""
+    session_manager = SessionManager()
+    latest_session = session_manager.get_latest_session()
+
+    if not latest_session:
+        console.print("[yellow]Немає збережених сесій.[/yellow]")
         return
-    run_dirs = sorted([p for p in runs_dir.iterdir() if p.is_dir()])
-    if not run_dirs:
-        console.print("Немає запусків.")
-        return
-    latest = run_dirs[-1]
-    summary_path = latest / "inventory.xlsx"
-    console.print(f"Останній запуск: {latest.name}")
-    console.print(f"Файл інвентаризації: {summary_path}")
+
+    console.print(f"\n[bold cyan]Остання сесія:[/bold cyan] {latest_session.session_id}")
+    console.print(f"[cyan]Тип операції:[/cyan] {latest_session.operation_type}")
+    console.print(f"[cyan]Дата:[/cyan] {latest_session.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    console.print(f"[cyan]Директорія:[/cyan] {latest_session.session_dir}")
+
+    # Показати файли в сесії
+    summary_file = latest_session.session_dir / "session_summary.txt"
+    if summary_file.exists():
+        console.print(f"\n[green]Підсумковий звіт:[/green]")
+        console.print(summary_file.read_text(encoding="utf-8"))
+    else:
+        inventory_path = latest_session.session_dir / "inventory.xlsx"
+        if inventory_path.exists():
+            console.print(f"\n[green]Файл інвентаризації:[/green] {inventory_path}")
+
+    # Показати список всіх файлів сесії
+    console.print(f"\n[bold]Файли сесії:[/bold]")
+    for file_path in sorted(latest_session.session_dir.glob("*")):
+        if file_path.is_file():
+            size = file_path.stat().st_size / 1024  # KB
+            console.print(f"  - {file_path.name} ({size:.1f} KB)")
 
 
 def sort_and_organize(cfg: Config) -> None:
     """Окреме меню для сортування та організації файлів."""
     console.print("\n[bold cyan]═══ Сортування та організація файлів ═══[/bold cyan]\n")
 
-    # Знайти останній запуск
-    latest_run = find_latest_run()
-    if not latest_run:
-        console.print("[red]Помилка: Немає жодного запуску. Спочатку виконайте аналіз (пункт 1).[/red]")
-        return
+    # Знайти останню сесію сканування
+    session_manager = SessionManager()
+    source_session = session_manager.get_latest_session(operation_type="SCAN")
 
-    console.print(f"[green]✓[/green] Використовується запуск: {latest_run.name}")
+    if not source_session:
+        # Якщо немає SCAN, спробувати будь-яку останню
+        source_session = session_manager.get_latest_session()
+        if not source_session:
+            console.print("[red]Помилка: Немає жодної сесії. Спочатку виконайте аналіз (пункт 1).[/red]")
+            return
+
+    console.print(f"[green]✓[/green] Використовується сесія: {source_session.session_id}")
 
     # Прочитати інвентаризацію
     try:
-        df = read_inventory(latest_run)
+        df = read_inventory(source_session.session_dir)
         console.print(f"[green]✓[/green] Завантажено {len(df)} записів")
     except Exception as e:
         console.print(f"[red]Помилка читання інвентаризації: {e}[/red]")
@@ -313,12 +339,35 @@ def sort_and_organize(cfg: Config) -> None:
             console.print("[yellow]Невірний вибір[/yellow]")
             return
 
-        # Оновити інвентаризацію
+        # Створити нову сесію для сортування
         if file_updates:
-            console.print("\n[cyan]Оновлення інвентаризації...[/cyan]")
+            console.print("\n[cyan]Створення сесії сортування...[/cyan]")
             strategy = {"1": "by_category", "2": "by_date", "3": "by_type", "4": "flattened"}.get(choice, "manual")
-            update_inventory_after_sort(latest_run, file_updates, strategy)
-            console.print(f"[green]✓[/green] Інвентаризація оновлена: {latest_run / 'inventory.xlsx'}")
+
+            # Створити нову сесію SORT
+            sort_session = session_manager.create_session(f"SORT_{strategy.upper()}")
+            console.print(f"[green]✓[/green] Сесія створена: {sort_session.session_id}")
+
+            # Оновити інвентаризацію
+            update_inventory_after_sort(source_session.session_dir, file_updates, strategy)
+            console.print(f"[green]✓[/green] Інвентаризація вихідної сесії оновлена")
+
+            # Зберегти звіт в новій сесії
+            sort_report = []
+            sort_report.append("=" * 80)
+            sort_report.append(f"ЗВІТ СОРТУВАННЯ")
+            sort_report.append("=" * 80)
+            sort_report.append(f"\nВихідна сесія: {source_session.session_id}")
+            sort_report.append(f"Стратегія: {strategy}")
+            sort_report.append(f"Переміщено файлів: {len(file_updates)}\n")
+            for old, new in file_updates.items():
+                sort_report.append(f"{old}")
+                sort_report.append(f"  → {new}\n")
+
+            (sort_session.session_dir / "sort_report.txt").write_text(
+                "\n".join(sort_report), encoding="utf-8"
+            )
+            console.print(f"[green]✓[/green] Звіт збережено: {sort_session.session_dir / 'sort_report.txt'}")
 
     except Exception as e:
         console.print(f"\n[red]Помилка виконання: {e}[/red]")
@@ -326,14 +375,35 @@ def sort_and_organize(cfg: Config) -> None:
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
-def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
+def execute_pipeline(
+    cfg: Config,
+    mode: str,
+    operation_type: str,
+    delete_exact: bool = False,
+    sort_strategy: Optional[str] = None
+) -> None:
+    """
+    Виконати pipeline обробки файлів.
+
+    Args:
+        cfg: Конфігурація
+        mode: Режим роботи ('dry-run' або 'commit')
+        operation_type: Тип операції (SCAN, RENAME, SORT, тощо)
+        delete_exact: Видаляти дублікати замість карантину
+        sort_strategy: Стратегія сортування (опціонально)
+    """
     start_time = datetime.now(timezone.utc)
-    run_id = start_time.strftime("%Y%m%dT%H%M%S")
-    run_dir = Path("runs") / run_id
+
+    # Створити нову сесію
+    session_manager = SessionManager()
+    session = session_manager.create_session(operation_type)
+
+    console.print(f"[cyan]Створено сесію:[/cyan] {session.session_id}")
+    console.print(f"[cyan]Директорія:[/cyan] {session.session_dir}\n")
 
     try:
-        setup_logging(run_dir)
-        save_config(cfg, run_dir)
+        setup_logging(session.session_dir)
+        save_config(cfg, session.session_dir)
     except Exception as exc:
         console.print(f"[red]Помилка ініціалізації: {exc}[/red]")
         return
@@ -697,7 +767,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tui.update_stage("Створення інвентаризації")
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         summary = RunSummary(
-            run_id=run_id,
+            run_id=session.session_id,
             files_total=len(metas),
             files_processed=len(rows),
             renamed_ok=renamed_ok,
@@ -721,16 +791,20 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         )
 
         try:
-            write_inventory(rows, summary, run_dir)
+            write_inventory(rows, summary, session.session_dir)
+
+            # Створити додаткові звіти
+            _create_session_reports(session, metas, exact_groups, rename_plans, llm_client, summary)
 
             # Зупинити TUI та показати фінальну статистику
             tui.show_final_stats()
 
-            console.print(f"[green]✓[/green] Інвентаризація збережена: {run_dir / 'inventory.xlsx'}")
+            console.print(f"[green]✓[/green] Інвентаризація збережена: {session.session_dir / 'inventory.xlsx'}")
             console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
             console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
             if summary.duplicate_files > 0:
                 console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
+            console.print(f"\n[dim]Додаткові звіти збережено в {session.session_dir}[/dim]")
         except Exception as exc:
             tui.stop()
             console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")
@@ -745,6 +819,135 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         console.print(f"\n[dim]Детальна інформація:[/dim]")
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise  # Передаємо помилку вище
+
+
+def _create_session_reports(
+    session,
+    metas: List[FileMeta],
+    exact_groups: List[DuplicateGroup],
+    rename_plans: List,
+    llm_client: Optional[LLMClient],
+    summary: RunSummary,
+) -> None:
+    """Створити додаткові звіти в директорії сесії."""
+
+    # 1. Список просканованих файлів
+    scanned_files_report = []
+    scanned_files_report.append("=" * 80)
+    scanned_files_report.append(f"ЗВІТ: Проскановані файли")
+    scanned_files_report.append(f"Сесія: {session.session_id}")
+    scanned_files_report.append(f"Дата: {session.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    scanned_files_report.append("=" * 80)
+    scanned_files_report.append(f"\nЗагальна кількість файлів: {len(metas)}\n")
+
+    for idx, meta in enumerate(metas, 1):
+        size_mb = meta.size / (1024 * 1024)
+        scanned_files_report.append(f"{idx:4d}. {meta.path.name}")
+        scanned_files_report.append(f"      Шлях: {meta.path}")
+        scanned_files_report.append(f"      Розмір: {size_mb:.2f} MB")
+        scanned_files_report.append(f"      SHA256: {meta.sha256[:16] if meta.sha256 else 'N/A'}...")
+        scanned_files_report.append("")
+
+    (session.session_dir / "01_scanned_files.txt").write_text(
+        "\n".join(scanned_files_report), encoding="utf-8"
+    )
+
+    # 2. Звіт про дублікати
+    if exact_groups:
+        duplicates_report = []
+        duplicates_report.append("=" * 80)
+        duplicates_report.append(f"ЗВІТ: Знайдені дублікати")
+        duplicates_report.append(f"Сесія: {session.session_id}")
+        duplicates_report.append("=" * 80)
+        duplicates_report.append(f"\nКількість груп дублікатів: {len(exact_groups)}\n")
+
+        for idx, group in enumerate(exact_groups, 1):
+            duplicates_report.append(f"\nГрупа #{idx} (ID: {group.group_id})")
+            duplicates_report.append(f"  Кількість файлів: {len(group.files)}")
+            duplicates_report.append(f"  Канонічний файл: {group.canonical().path}")
+            duplicates_report.append(f"  Дублікати:")
+            for file_meta in group.files:
+                if file_meta.path != group.canonical().path:
+                    duplicates_report.append(f"    - {file_meta.path}")
+
+        (session.session_dir / "02_duplicates.txt").write_text(
+            "\n".join(duplicates_report), encoding="utf-8"
+        )
+
+    # 3. Звіт про перейменування
+    if rename_plans:
+        rename_report = []
+        rename_report.append("=" * 80)
+        rename_report.append(f"ЗВІТ: План перейменування")
+        rename_report.append(f"Сесія: {session.session_id}")
+        rename_report.append("=" * 80)
+        rename_report.append(f"\nКількість файлів для перейменування: {len(rename_plans)}\n")
+
+        for idx, plan in enumerate(rename_plans, 1):
+            rename_report.append(f"{idx:4d}. {plan.meta.path.name}")
+            rename_report.append(f"      Нова назва: {plan.new_name}")
+            if plan.collision:
+                rename_report.append(f"      ⚠️  Колізія імені!")
+            rename_report.append("")
+
+        (session.session_dir / "03_rename_plan.txt").write_text(
+            "\n".join(rename_report), encoding="utf-8"
+        )
+
+    # 4. Статистика LLM
+    if llm_client:
+        stats = llm_client.get_stats()
+        if stats["requests"] > 0:
+            llm_report = []
+            llm_report.append("=" * 80)
+            llm_report.append(f"ЗВІТ: Статистика LLM")
+            llm_report.append(f"Сесія: {session.session_id}")
+            llm_report.append("=" * 80)
+            llm_report.append(f"\nПровайдер: {llm_client.provider}")
+            llm_report.append(f"Модель: {llm_client.model}")
+            llm_report.append(f"\nЗапитів надіслано: {stats['requests']}")
+            llm_report.append(f"Відповідей отримано: {stats['responses']}")
+            llm_report.append(f"\nТокенів надіслано: {stats['tokens_sent']:,}")
+            llm_report.append(f"Токенів отримано: {stats['tokens_received']:,}")
+            llm_report.append(f"Всього токенів: {stats['tokens']:,}")
+
+            (session.session_dir / "04_llm_stats.txt").write_text(
+                "\n".join(llm_report), encoding="utf-8"
+            )
+
+    # 5. Підсумковий звіт сесії
+    session_summary = []
+    session_summary.append("=" * 80)
+    session_summary.append(f"ПІДСУМКОВИЙ ЗВІТ СЕСІЇ")
+    session_summary.append("=" * 80)
+    session_summary.append(f"\nID сесії: {session.session_id}")
+    session_summary.append(f"Тип операції: {session.operation_type}")
+    session_summary.append(f"Дата та час: {session.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    session_summary.append(f"\nСТАТИСТИКА:")
+    session_summary.append(f"  Файлів просканов ано: {summary.files_total}")
+    session_summary.append(f"  Файлів оброблено: {summary.files_processed}")
+    session_summary.append(f"  Перейменовано успішно: {summary.renamed_ok}")
+    session_summary.append(f"  Помилок перейменування: {summary.renamed_failed}")
+    session_summary.append(f"  Груп дублікатів: {summary.duplicate_groups}")
+    session_summary.append(f"  Файлів-дублікатів: {summary.duplicate_files}")
+    session_summary.append(f"  Файлів у карантині: {summary.quarantined_count}")
+    session_summary.append(f"  Файлів видалено: {summary.deleted_count}")
+    session_summary.append(f"  Тривалість: {summary.duration_total_s:.2f} секунд")
+    session_summary.append(f"\nФАЙЛИ СЕСІЇ:")
+    session_summary.append(f"  - inventory.xlsx - повна інвентаризація")
+    session_summary.append(f"  - 01_scanned_files.txt - список файлів")
+    if exact_groups:
+        session_summary.append(f"  - 02_duplicates.txt - знайдені дублікати")
+    if rename_plans:
+        session_summary.append(f"  - 03_rename_plan.txt - план перейменування")
+    if llm_client and llm_client.get_stats()["requests"] > 0:
+        session_summary.append(f"  - 04_llm_stats.txt - статистика LLM")
+    session_summary.append(f"  - session_summary.txt - цей файл")
+    session_summary.append(f"  - session_metadata.json - метадані сесії")
+
+    (session.session_dir / "session_summary.txt").write_text(
+        "\n".join(session_summary), encoding="utf-8"
+    )
 
 
 def update_progress(run_dir: Path, tracker: ProgressTracker) -> None:
