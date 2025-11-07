@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import mimetypes
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,13 +22,11 @@ from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
 from app.inventory import InventoryRow, RunSummary, write_inventory, find_latest_run, read_inventory, update_inventory_after_sort
-from app.live_tui import LiveTUI
 from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
 from app.scan import FileMeta, ensure_hash, scan_directory
-from app.session import SessionManager
 from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
 from app.theme import THEME, markup, format_number, format_status, format_error, header_line
 
@@ -144,7 +141,7 @@ def main() -> None:
             console.print(markup(THEME.primary_text, "[8] Вихід"))
             choice = input("Оберіть опцію: ").strip()
             if choice == "1":
-                execute_pipeline(cfg, mode="dry-run", operation_type="SCAN")
+                execute_pipeline(cfg, mode="dry-run")
             elif choice == "2":
                 confirm = input("Виконати перейменування? [Y/n] ").strip().lower()
                 if confirm in {"", "y", "yes"}:
@@ -152,15 +149,12 @@ def main() -> None:
                     delete_exact = delete_choice in {"", "y", "yes"}
                     sort_choice = input("Сортувати файли по підпапках? [Y/n] ").strip().lower()
                     sort_strategy = None
-                    operation_type = "RENAME"
                     if sort_choice in {"", "y", "yes"}:
                         console.print(markup(THEME.info, "1 = by_category, 2 = by_date, 3 = by_type"))
                         mapping = {"1": "by_category", "2": "by_date", "3": "by_type"}
                         selected = input("Оберіть стратегію: ").strip()
                         sort_strategy = mapping.get(selected)
-                        if sort_strategy:
-                            operation_type = "RENAME_SORT"
-                    execute_pipeline(cfg, mode="commit", operation_type=operation_type, delete_exact=delete_exact, sort_strategy=sort_strategy)
+                    execute_pipeline(cfg, mode="commit", delete_exact=delete_exact, sort_strategy=sort_strategy)
             elif choice == "3":
                 show_last_summary()
             elif choice == "4":
@@ -271,15 +265,14 @@ def configure(cfg: Config) -> Config:
 
             # Модель
             console.print("   Рекомендовані моделі:")
-            console.print("   - gpt-5-mini (найновіша економна, серпень 2025)")
-            console.print("   - gpt-5 (найпотужніша, серпень 2025)")
-            console.print("   - gpt-4.1 (квітень 2025)")
-            console.print("   - gpt-4o-mini (попередня економна)")
-            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-5-mini'}): ").strip()
+            console.print("   - gpt-4o-mini (швидка, дешева)")
+            console.print("   - gpt-4o (найкраща multimodal)")
+            console.print("   - gpt-4-turbo (попередня топова)")
+            model = input(f"   Модель (Enter для {cfg.llm_model or 'gpt-4o-mini'}): ").strip()
             if model:
                 cfg.llm_model = model
             elif not cfg.llm_model:
-                cfg.llm_model = "gpt-5-mini"
+                cfg.llm_model = "gpt-4o-mini"
 
             # Перевірка підключення
             if cfg.llm_api_key_openai:
@@ -394,7 +387,7 @@ def sort_and_organize(cfg: Config) -> None:
             console.print(markup(THEME.warning, "Невірний вибір"))
             return
 
-        # Створити нову сесію для сортування
+        # Оновити інвентаризацію
         if file_updates:
             console.print(markup(THEME.processing, "\nОновлення інвентаризації..."))
             strategy = {"1": "by_category", "2": "by_date", "3": "by_type", "4": "flattened"}.get(choice, "manual")
@@ -407,35 +400,14 @@ def sort_and_organize(cfg: Config) -> None:
         console.print(markup(THEME.dim_text, traceback.format_exc()))
 
 
-def execute_pipeline(
-    cfg: Config,
-    mode: str,
-    operation_type: str,
-    delete_exact: bool = False,
-    sort_strategy: Optional[str] = None
-) -> None:
-    """
-    Виконати pipeline обробки файлів.
-
-    Args:
-        cfg: Конфігурація
-        mode: Режим роботи ('dry-run' або 'commit')
-        operation_type: Тип операції (SCAN, RENAME, SORT, тощо)
-        delete_exact: Видаляти дублікати замість карантину
-        sort_strategy: Стратегія сортування (опціонально)
-    """
+def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
     start_time = datetime.now(timezone.utc)
-
-    # Створити нову сесію
-    session_manager = SessionManager()
-    session = session_manager.create_session(operation_type)
-
-    console.print(f"[cyan]Створено сесію:[/cyan] {session.session_id}")
-    console.print(f"[cyan]Директорія:[/cyan] {session.session_dir}\n")
+    run_id = start_time.strftime("%Y%m%dT%H%M%S")
+    run_dir = Path("runs") / run_id
 
     try:
-        setup_logging(session.session_dir)
-        save_config(cfg, session.session_dir)
+        setup_logging(run_dir)
+        save_config(cfg, run_dir)
     except Exception as exc:
         console.print(format_error(f"Помилка ініціалізації: {exc}"))
         return
@@ -470,9 +442,6 @@ def execute_pipeline(
             console.print(format_error(f"Помилка: {root} не є директорією"))
             return
 
-        console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
-        console.print(f"[cyan]Швидке сканування директорії...[/cyan]\n")
-
         # Створити LLM клієнт якщо увімкнено
         llm_client = None
         if cfg.llm_enabled and cfg.llm_provider != "none":
@@ -488,7 +457,6 @@ def execute_pipeline(
                     api_key=api_key,
                     model=cfg.llm_model,
                     enabled=True,
-                    session_dir=session.session_dir,
                 )
                 console.print(
                     format_status(f"LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})", is_error=False)
@@ -510,12 +478,14 @@ def execute_pipeline(
             console.print(markup(THEME.warning, "Попередження: Не знайдено файлів для обробки"))
             return
 
-        # Запустити LiveTUI після сканування
-        console.print(f"[green]✓[/green] Знайдено {len(metas)} файлів")
-        time.sleep(1)  # Пауза щоб побачити результат сканування
-        tui.start(total_files=len(metas))
+        # Після сканування встановлюємо total для всіх етапів
+        tracker.set_all_totals(len(metas))
+        tracker.set_stage_total("scan", len(metas))
+        tracker.increment("scan", len(metas))
+        tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
+        update_progress(run_dir, tracker)
 
-        tui.update_stage("Пошук дублікатів")
+        tracker.update_description("dedup", "Аналіз дублікатів...")
         exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
 
         # Підрахунок файлів-дублікатів
@@ -545,51 +515,14 @@ def execute_pipeline(
 
             tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
             try:
-                # Хеш файлу
                 ensure_hash(meta)
-
-                # Перевірка дублікатів для цього файлу
-                is_duplicate = any(meta.path in [f.path for f in group.files] for group in exact_groups)
-                if is_duplicate:
-                    tui.update_duplicates("Так, знайдено дублікати")
-                else:
-                    tui.update_duplicates("Немає")
-
-                # Вилучення тексту
                 result = extract_text(meta, cfg.ocr_lang)
-
-                # Класифікація (можливо з LLM)
-                if llm_client and llm_client.enabled and result.text.strip():
-                    tui.update_llm(requests=1)  # Запит до LLM
-
-                    # Зберігаємо попередні значення токенів
-                    stats_before = llm_client.get_stats()
-                    prev_sent = stats_before["tokens_sent"]
-                    prev_recv = stats_before["tokens_received"]
-
-                    classification = classify_text(
-                        result.text,
-                        llm_client=llm_client,
-                        filename=meta.path.name
-                    )
-
-                    # Обчислюємо різницю токенів
-                    stats_after = llm_client.get_stats()
-                    new_sent = stats_after["tokens_sent"] - prev_sent
-                    new_recv = stats_after["tokens_received"] - prev_recv
-
-                    if new_sent > 0 or new_recv > 0:
-                        tui.update_llm(responses=1)
-                        tui.update_llm_tokens(sent=new_sent, received=new_recv)
-                else:
-                    classification = classify_text(result.text, filename=meta.path.name)
-
+                # Використовуємо LLM для класифікації якщо доступний
+                classification = classify_text(result.text, llm_client=llm_client)
                 category = classification.get("category") or "інше"
-                tui.update_classification(category)
-
                 date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
+                # Якщо LLM повернув summary, використовуємо його
                 summary = classification.get("summary") or summarize_text(result.text, llm_client=llm_client)
-
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=result,
@@ -638,8 +571,10 @@ def execute_pipeline(
 
         update_progress(run_dir, tracker)
 
-            # Завершити обробку файлу
-            tui.finish_file()
+        tracker.set_stage_total("classify", len(metas))
+        tracker.increment("classify", len(metas))
+        tracker.update_description("classify", "Класифікацію завершено")
+        update_progress(run_dir, tracker)
 
         duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
         duplicates_files_map: Dict[str, List[Path]] = {}
@@ -707,7 +642,7 @@ def execute_pipeline(
         row_map: Dict[Path, InventoryRow] = {}
         path_to_row: Dict[Path, InventoryRow] = {}
 
-        tui.update_stage("Перейменування файлів" if mode == "commit" else "Планування перейменування")
+        tracker.set_stage_total("rename", len(rename_plans))
         renamed_ok = 0
         renamed_failed = 0
         for idx, plan in enumerate(rename_plans, 1):
@@ -816,6 +751,7 @@ def execute_pipeline(
             rows.append(row)
             row_map[meta_path] = row
             path_to_row[Path(row.path_new)] = row
+        update_progress(run_dir, tracker)
 
         for meta in metas:
             if meta.path in row_map:
@@ -928,10 +864,10 @@ def execute_pipeline(
                 row.path_final = str(new_path)
                 path_to_row[Path(new_path)] = row
 
-        tui.update_stage("Створення інвентаризації")
+        tracker.increment("inventory")
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         summary = RunSummary(
-            run_id=session.session_id,
+            run_id=run_id,
             files_total=len(metas),
             files_processed=len(rows),
             renamed_ok=renamed_ok,
@@ -991,150 +927,6 @@ def execute_pipeline(
         console.print(f"\n{markup(THEME.dim_text, 'Детальна інформація:')}")
         console.print(markup(THEME.dim_text, traceback.format_exc()))
         raise  # Передаємо помилку вище
-
-
-def _create_session_reports(
-    session,
-    metas: List[FileMeta],
-    exact_groups: List[DuplicateGroup],
-    rename_plans: List,
-    llm_client: Optional[LLMClient],
-    summary: RunSummary,
-) -> None:
-    """Створити додаткові звіти в директорії сесії."""
-
-    # 1. Список просканованих файлів
-    scanned_files_report = []
-    scanned_files_report.append("=" * 80)
-    scanned_files_report.append(f"ЗВІТ: Проскановані файли")
-    scanned_files_report.append(f"Сесія: {session.session_id}")
-    scanned_files_report.append(f"Дата: {session.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-    scanned_files_report.append("=" * 80)
-    scanned_files_report.append(f"\nЗагальна кількість файлів: {len(metas)}\n")
-
-    for idx, meta in enumerate(metas, 1):
-        size_mb = meta.size / (1024 * 1024)
-        scanned_files_report.append(f"{idx:4d}. {meta.path.name}")
-        scanned_files_report.append(f"      Шлях: {meta.path}")
-        scanned_files_report.append(f"      Розмір: {size_mb:.2f} MB")
-        scanned_files_report.append(f"      SHA256: {meta.sha256[:16] if meta.sha256 else 'N/A'}...")
-        scanned_files_report.append("")
-
-    (session.session_dir / "01_scanned_files.txt").write_text(
-        "\n".join(scanned_files_report), encoding="utf-8"
-    )
-
-    # 2. Звіт про дублікати
-    if exact_groups:
-        duplicates_report = []
-        duplicates_report.append("=" * 80)
-        duplicates_report.append(f"ЗВІТ: Знайдені дублікати")
-        duplicates_report.append(f"Сесія: {session.session_id}")
-        duplicates_report.append("=" * 80)
-        duplicates_report.append(f"\nКількість груп дублікатів: {len(exact_groups)}\n")
-
-        for idx, group in enumerate(exact_groups, 1):
-            duplicates_report.append(f"\nГрупа #{idx} (ID: {group.group_id})")
-            duplicates_report.append(f"  Кількість файлів: {len(group.files)}")
-            duplicates_report.append(f"  Канонічний файл: {group.canonical().path}")
-            duplicates_report.append(f"  Дублікати:")
-            for file_meta in group.files:
-                if file_meta.path != group.canonical().path:
-                    duplicates_report.append(f"    - {file_meta.path}")
-
-        (session.session_dir / "02_duplicates.txt").write_text(
-            "\n".join(duplicates_report), encoding="utf-8"
-        )
-
-    # 3. Звіт про перейменування
-    if rename_plans:
-        rename_report = []
-        rename_report.append("=" * 80)
-        rename_report.append(f"ЗВІТ: План перейменування")
-        rename_report.append(f"Сесія: {session.session_id}")
-        rename_report.append("=" * 80)
-        rename_report.append(f"\nКількість файлів для перейменування: {len(rename_plans)}\n")
-
-        for idx, plan in enumerate(rename_plans, 1):
-            rename_report.append(f"{idx:4d}. {plan.meta.path.name}")
-            rename_report.append(f"      Нова назва: {plan.new_name}")
-            if plan.collision:
-                rename_report.append(f"      ⚠️  Колізія імені!")
-            rename_report.append("")
-
-        (session.session_dir / "03_rename_plan.txt").write_text(
-            "\n".join(rename_report), encoding="utf-8"
-        )
-
-    # 4. Статистика LLM
-    if llm_client:
-        stats = llm_client.get_stats()
-        if stats["requests"] > 0:
-            llm_report = []
-            llm_report.append("=" * 80)
-            llm_report.append(f"ЗВІТ: Статистика LLM")
-            llm_report.append(f"Сесія: {session.session_id}")
-            llm_report.append("=" * 80)
-            llm_report.append(f"\nПровайдер: {llm_client.provider}")
-            llm_report.append(f"Модель: {llm_client.model}")
-            llm_report.append(f"\nЛІМІТИ:")
-            llm_report.append(f"  Максимум символів на вхід: {llm_client.MAX_INPUT_LENGTH}")
-            llm_report.append(f"  Максимум символів відображення: {llm_client.MAX_OUTPUT_DISPLAY}")
-            llm_report.append(f"\nСТАТИСТИКА:")
-            llm_report.append(f"  Запитів надіслано: {stats['requests']}")
-            llm_report.append(f"  Відповідей отримано: {stats['responses']}")
-            llm_report.append(f"\nТОКЕНИ:")
-            llm_report.append(f"  Токенів надіслано: {stats['tokens_sent']:,}")
-            llm_report.append(f"  Токенів отримано: {stats['tokens_received']:,}")
-            llm_report.append(f"  Всього токенів: {stats['tokens']:,}")
-            llm_report.append(f"\nДЕТАЛІ:")
-            llm_report.append(f"  Повний лог запитів/відповідей: llm_full_log.json")
-            llm_report.append(f"  У логу збережено повні тексти відповідей (без обрізання)")
-
-            (session.session_dir / "04_llm_stats.txt").write_text(
-                "\n".join(llm_report), encoding="utf-8"
-            )
-
-    # 5. Підсумковий звіт сесії
-    session_summary = []
-    session_summary.append("=" * 80)
-    session_summary.append(f"ПІДСУМКОВИЙ ЗВІТ СЕСІЇ")
-    session_summary.append("=" * 80)
-    session_summary.append(f"\nID сесії: {session.session_id}")
-    session_summary.append(f"Тип операції: {session.operation_type}")
-    session_summary.append(f"Дата та час: {session.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    session_summary.append(f"\nСТАТИСТИКА:")
-    session_summary.append(f"  Файлів просканов ано: {summary.files_total}")
-    session_summary.append(f"  Файлів оброблено: {summary.files_processed}")
-    session_summary.append(f"  Перейменовано успішно: {summary.renamed_ok}")
-    session_summary.append(f"  Помилок перейменування: {summary.renamed_failed}")
-    session_summary.append(f"  Груп дублікатів: {summary.duplicate_groups}")
-    session_summary.append(f"  Файлів-дублікатів: {summary.duplicate_files}")
-    session_summary.append(f"  Файлів у карантині: {summary.quarantined_count}")
-    session_summary.append(f"  Файлів видалено: {summary.deleted_count}")
-    session_summary.append(f"  Тривалість: {summary.duration_total_s:.2f} секунд")
-    session_summary.append(f"\nФАЙЛИ СЕСІЇ:")
-    session_summary.append(f"  - inventory.xlsx - повна інвентаризація")
-    session_summary.append(f"  - 01_scanned_files.txt - список файлів")
-    if exact_groups:
-        session_summary.append(f"  - 02_duplicates.txt - знайдені дублікати")
-    if rename_plans:
-        session_summary.append(f"  - 03_rename_plan.txt - план перейменування")
-    if llm_client and llm_client.get_stats()["requests"] > 0:
-        session_summary.append(f"  - 04_llm_stats.txt - статистика LLM")
-        session_summary.append(f"  - llm_full_log.json - повний лог LLM (включає необрізані відповіді)")
-    session_summary.append(f"  - session_summary.txt - цей файл")
-    session_summary.append(f"  - session_metadata.json - метадані сесії")
-
-    session_summary.append(f"\nОБМЕЖЕННЯ LLM:")
-    if llm_client:
-        session_summary.append(f"  - Вхідний текст: макс. {llm_client.MAX_INPUT_LENGTH} символів")
-        session_summary.append(f"  - Відображення в TUI: макс. {llm_client.MAX_OUTPUT_DISPLAY} символів")
-        session_summary.append(f"  - Повні відповіді збережено в llm_full_log.json")
-
-    (session.session_dir / "session_summary.txt").write_text(
-        "\n".join(session_summary), encoding="utf-8"
-    )
 
 
 def update_progress(run_dir: Path, tracker: ProgressTracker) -> None:

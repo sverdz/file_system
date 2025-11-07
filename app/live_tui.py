@@ -13,6 +13,8 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
+from app.theme import THEME
+
 
 @dataclass
 class FileProcessingInfo:
@@ -61,10 +63,10 @@ class LiveTUI:
 
             # Створити прогрес-бар
             self.progress = Progress(
-                TextColumn("[bold yellow]{task.description}"),
-                BarColumn(bar_width=50, complete_style="green", finished_style="bright_green"),
-                TextColumn("[bold cyan]{task.completed}/{task.total}"),
-                TextColumn("[bold magenta]{task.percentage:>3.0f}%"),
+                TextColumn(f"[bold {THEME.progress_text}]{{task.description}}"),
+                BarColumn(bar_width=50, complete_style=THEME.success, finished_style=THEME.success),
+                TextColumn(f"[bold {THEME.number_primary}]{{task.completed}}/{{task.total}}"),
+                TextColumn(f"[bold {THEME.progress_percent}]{{task.percentage:>3.0f}}%"),
                 TimeElapsedColumn(),
                 console=self.console,
             )
@@ -166,9 +168,9 @@ class LiveTUI:
         """Відрендерити інтерфейс."""
         # Статус-бар
         status_table = Table.grid(padding=(0, 2))
-        status_table.add_column(style="bold yellow")
-        status_table.add_column(style="bold cyan")
-        status_table.add_column(style="bold magenta")
+        status_table.add_column(style=f"bold {THEME.progress_percent}")
+        status_table.add_column(style=f"bold {THEME.info}")
+        status_table.add_column(style=f"bold {THEME.duplicate}")
 
         progress_text = f"{self.stats.processed_files}/{self.stats.total_files}"
         percentage = (
@@ -184,25 +186,25 @@ class LiveTUI:
 
         status_panel = Panel(
             status_table,
-            title="[bold white]СТАТУС ОБРОБКИ[/bold white]",
-            border_style="bright_blue",
+            title=f"[bold {THEME.title}]СТАТУС ОБРОБКИ",
+            border_style=THEME.border,
             padding=(0, 1),
         )
 
         # Панель поточного файлу
         if self.current_file.filename:
             file_table = Table.grid(padding=(0, 1))
-            file_table.add_column("Параметр", style="dim cyan")
+            file_table.add_column("Параметр", style=f"dim {THEME.info}")
             file_table.add_column("Значення", style="bold")
 
-            # Назва файлу - жовтий/помаранчевий
+            # Назва файлу
             file_table.add_row(
                 "📄 Файл:",
-                Text(self.current_file.filename, style="bold yellow"),
+                Text(self.current_file.filename, style=f"bold {THEME.file_name}"),
             )
 
             # Дублікати
-            dup_color = "green" if "немає" in self.current_file.duplicates_status.lower() else "yellow"
+            dup_color = THEME.success if "немає" in self.current_file.duplicates_status.lower() else THEME.warning
             file_table.add_row(
                 "🔎 Дублікати:",
                 Text(self.current_file.duplicates_status, style=dup_color),
@@ -211,14 +213,14 @@ class LiveTUI:
             # Класифікація
             file_table.add_row(
                 "🏷️  Категорія:",
-                Text(self.current_file.classification, style="bold yellow"),
+                Text(self.current_file.classification, style=f"bold {THEME.category}"),
             )
 
             # LLM статус
             llm_status = f"Запитів: {self.current_file.llm_requests} | Відповідей: {self.current_file.llm_responses}"
             if self.current_file.llm_error:
                 llm_status += " | ❌ Помилка"
-            llm_color = "red" if self.current_file.llm_error else "bright_yellow"
+            llm_color = THEME.error if self.current_file.llm_error else THEME.llm_request
             file_table.add_row(
                 "🤖 LLM:",
                 Text(llm_status, style=llm_color),
@@ -226,15 +228,15 @@ class LiveTUI:
 
             current_file_panel = Panel(
                 file_table,
-                title="[bold yellow]ПОТОЧНИЙ ФАЙЛ[/bold yellow]",
-                border_style="yellow",
+                title=f"[bold {THEME.progress_percent}]ПОТОЧНИЙ ФАЙЛ",
+                border_style=THEME.progress_percent,
                 padding=(0, 1),
             )
         else:
             current_file_panel = Panel(
                 Text("Очікування файлу...", style="dim"),
-                title="[bold yellow]ПОТОЧНИЙ ФАЙЛ[/bold yellow]",
-                border_style="dim yellow",
+                title=f"[bold {THEME.progress_percent}]ПОТОЧНИЙ ФАЙЛ",
+                border_style=f"dim {THEME.progress_percent}",
                 padding=(0, 1),
             )
 
@@ -242,8 +244,8 @@ class LiveTUI:
         if self.progress:
             progress_panel = Panel(
                 self.progress,
-                title="[bold cyan]ПРОГРЕС[/bold cyan]",
-                border_style="cyan",
+                title=f"[bold {THEME.progress_bar}]ПРОГРЕС",
+                border_style=THEME.progress_bar,
                 padding=(0, 1),
             )
         else:
@@ -261,9 +263,9 @@ class LiveTUI:
         self.stop()
 
         # Створити таблицю статистики
-        stats_table = Table(title="[bold green]ПІДСУМКОВА СТАТИСТИКА СЕСІЇ[/bold green]", show_header=False)
-        stats_table.add_column("Параметр", style="bold cyan", width=40)
-        stats_table.add_column("Значення", style="bold yellow", justify="right")
+        stats_table = Table(title=f"[bold {THEME.success}]ПІДСУМКОВА СТАТИСТИКА СЕСІЇ", show_header=False)
+        stats_table.add_column("Параметр", style=f"bold {THEME.header}", width=40)
+        stats_table.add_column("Значення", style=f"bold {THEME.number_primary}", justify="right")
 
         stats_table.add_row("📊 Загальна кількість файлів", str(self.stats.total_files))
         stats_table.add_row("✅ Оброблено файлів", str(self.stats.processed_files))
@@ -275,7 +277,7 @@ class LiveTUI:
         stats_table.add_row("📥 Токенів отримано", f"{self.stats.llm_tokens_received:,}")
 
         total_tokens = self.stats.llm_tokens_sent + self.stats.llm_tokens_received
-        stats_table.add_row("💬 Всього токенів", f"[bold bright_yellow]{total_tokens:,}[/bold bright_yellow]")
+        stats_table.add_row("💬 Всього токенів", f"[bold {THEME.progress_percent}]{total_tokens:,}")
 
         self.console.print("\n")
         self.console.print(stats_table)
