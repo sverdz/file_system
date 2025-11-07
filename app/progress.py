@@ -14,8 +14,19 @@ from rich.table import Table
 from rich.layout import Layout
 from rich.live import Live
 from rich.text import Text
+from rich.markup import escape
 
 from .theme import THEME, markup, format_number, format_percent, format_status
+from .hacker_ui import (
+    generate_hex_id,
+    calculate_sha256,
+    format_file_size,
+    format_date,
+    render_ascii_logo,
+    render_file_log_entry,
+    render_current_file,
+    render_queue,
+)
 
 WINDOW = 10
 
@@ -257,142 +268,209 @@ class ProgressTracker:
         self.current_file.status = status
         self.current_file.error_msg = error_msg
 
+        # Генерувати hex ID та SHA hash для нового файлу
+        if name and not self.current_file.hex_id:
+            self.current_file.hex_id = generate_hex_id(self.hex_counter)
+            self.hex_counter += 1
+
+        if path and not self.current_file.sha_hash:
+            from pathlib import Path
+            file_path = Path(path)
+            if file_path.exists():
+                self.current_file.size = file_path.stat().st_size
+                self.current_file.modified_time = file_path.stat().st_mtime
+                self.current_file.sha_hash = calculate_sha256(path)
+
+        # Оновити Live display
+        if self.live and self.use_compact_view:
+            self.live.update(self._render_display())
+
+    def add_to_log(
+        self,
+        status: str,
+        duplicate_info: str = "",
+        text_length: int = 0,
+        llm_response: str = "",
+        category: str = "",
+        destination: str = "",
+        processing_time: Dict[str, float] = None,
+    ) -> None:
+        """Додати поточний файл до логу оброблених."""
+        if not self.current_file.name:
+            return
+
+        entry = FileLogEntry(
+            hex_id=self.current_file.hex_id,
+            timestamp=time.strftime("%H:%M:%S"),
+            filename=self.current_file.name,
+            size=self.current_file.size,
+            modified_date=format_date(self.current_file.modified_time),
+            sha_hash=self.current_file.sha_hash,
+            status=status,
+            duplicate_info=duplicate_info,
+            text_length=text_length,
+            llm_response=llm_response,
+            category=category,
+            destination=destination,
+            processing_time=processing_time or {},
+        )
+
+        self.file_log.append(entry)
+
+        # Оновити Live display
+        if self.live and self.use_compact_view:
+            self.live.update(self._render_display())
+
+    def populate_queue(self, file_paths: List[str]) -> None:
+        """Заповнити чергу файлів."""
+        from pathlib import Path
+
+        self.file_queue.clear()
+
+        for file_path in file_paths:
+            p = Path(file_path)
+            if p.exists():
+                qf = QueuedFile(
+                    hex_id=generate_hex_id(self.hex_counter),
+                    filename=p.name,
+                    size=p.stat().st_size,
+                    modified_date=format_date(p.stat().st_mtime),
+                )
+                self.file_queue.append(qf)
+                self.hex_counter += 1
+
+        # Оновити Live display
+        if self.live and self.use_compact_view:
+            self.live.update(self._render_display())
+
+    def remove_from_queue(self, filename: str) -> None:
+        """Видалити файл з черги."""
+        self.file_queue = [qf for qf in self.file_queue if qf.filename != filename]
+
         # Оновити Live display
         if self.live and self.use_compact_view:
             self.live.update(self._render_display())
 
     def _render_display(self) -> Group:
-        """Відрендерити живий дисплей з панелями."""
+        """Відрендерити хакерський дисплей з файлами."""
         components = []
 
-        # Панель статусу з загальною інформацією
-        status_table = Table.grid(padding=(0, 3))
-        status_table.add_column(style=f"bold {THEME.info}")
-        status_table.add_column(style=f"bold {THEME.success}")
-        status_table.add_column(style=f"bold {THEME.duplicate}")
+        # ═══════════════════════════════════════════════════════════
+        # HEADER: ASCII LOGO + СТАТУС
+        # ═══════════════════════════════════════════════════════════
+        logo = render_ascii_logo(self.scan_dir or "/")
+        components.append(logo)
 
-        # Розрахувати час сесії
+        # Статистика в хедері
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
-        # Загальний прогрес
         total_completed = sum(sp.completed for sp in self.stages.values())
         total_total = sum(sp.total for sp in self.stages.values())
+        files_progress = f"{total_completed}/{total_total}" if total_total > 0 else "0/0"
 
-        status_table.add_row(
-            f"⏱️  Час: {elapsed_str}",
-            f"📊 Прогрес: {self.percentage():.1f}%",
-            f"🔍 Дублікати: {self.metrics.duplicate_groups} груп"
+        header_table = Table.grid(padding=(0, 2))
+        header_table.add_row(
+            f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
+            f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
+            f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
+            f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+            f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
+            f"[{THEME.dim_text}]⏳ [{THEME.number_primary}]{len(self.file_queue)}[/]",
         )
 
-        status_panel = Panel(
-            status_table,
-            title=f"[bold {THEME.title}]╔═══ СТАТУС ОБРОБКИ ═══╗",
+        llm_stats = ""
+        if self.metrics.llm_requests > 0:
+            llm_stats = f"  │  [{THEME.llm_request}]🤖 LLM: [{THEME.number_primary}]{self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
+
+        header_panel = Panel(
+            Group(header_table, Text(llm_stats, overflow="ignore")),
             border_style=THEME.border,
             padding=(0, 1),
         )
-        components.append(status_panel)
+        components.append(header_panel)
 
-        # Панель метрик
-        if (self.metrics.success_count > 0 or self.metrics.error_count > 0 or
-            self.metrics.llm_requests > 0):
-            metrics_table = Table.grid(padding=(0, 2))
-            metrics_table.add_column(style=THEME.info, width=25)
-            metrics_table.add_column(style="bold", justify="right")
+        # ═══════════════════════════════════════════════════════════
+        # PROCESSING LOG: Останні 10 файлів
+        # ═══════════════════════════════════════════════════════════
+        if self.file_log:
+            log_lines = []
+            # Показати останні 10 файлів
+            for entry in self.file_log[-10:]:
+                entry_lines = render_file_log_entry(entry, show_details=True)
+                for line in entry_lines:
+                    log_lines.append(Text.from_markup(line))
+                log_lines.append(Text(""))  # Порожній рядок між файлами
 
-            if self.metrics.success_count > 0:
-                metrics_table.add_row(
-                    "✅ Успішно оброблено:",
-                    markup(THEME.success, str(self.metrics.success_count))
-                )
-            if self.metrics.error_count > 0:
-                metrics_table.add_row(
-                    "❌ Помилок:",
-                    markup(THEME.error, str(self.metrics.error_count))
-                )
-            if self.metrics.skipped_count > 0:
-                metrics_table.add_row(
-                    "⏭️  Пропущено:",
-                    markup(THEME.warning, str(self.metrics.skipped_count))
-                )
-            if self.metrics.llm_requests > 0:
-                metrics_table.add_row(
-                    "🤖 LLM запитів:",
-                    markup(THEME.llm_request, str(self.metrics.llm_requests))
-                )
-            if self.metrics.llm_responses > 0:
-                metrics_table.add_row(
-                    "💬 LLM відповідей:",
-                    markup(THEME.llm_response, str(self.metrics.llm_responses))
-                )
+            log_panel = Panel(
+                Group(*log_lines) if log_lines else Text("Очікування файлів...", style="dim"),
+                title=f"[{THEME.header}]📜 PROCESSING LOG[/]",
+                border_style=THEME.decoration,
+                padding=(0, 1),
+            )
+            components.append(log_panel)
 
-            metrics_panel = Panel(
-                metrics_table,
-                title=f"[bold {THEME.header}]📈 МЕТРИКИ",
+        # ═══════════════════════════════════════════════════════════
+        # CURRENTLY PROCESSING: Поточний файл
+        # ═══════════════════════════════════════════════════════════
+        if self.current_file.name:
+            # Зібрати прогрес по етапах
+            stages_progress = {}
+            for stage_name, sp in self.stages.items():
+                stages_progress[stage_name] = (sp.completed, sp.total)
+
+            current_lines = render_current_file(self.current_file, stages_progress)
+            current_texts = [Text.from_markup(line) for line in current_lines]
+
+            current_panel = Panel(
+                Group(*current_texts),
+                title=f"[{THEME.processing}]⚙️  CURRENTLY PROCESSING[/]",
                 border_style=THEME.processing,
                 padding=(0, 1),
             )
-            components.append(metrics_panel)
+            components.append(current_panel)
 
-        # Панель поточного файлу
-        if self.current_file.name:
-            file_table = Table.grid(padding=(0, 1))
-            file_table.add_column("Параметр", style=THEME.info, width=15)
-            file_table.add_column("Значення", style="bold")
+        # ═══════════════════════════════════════════════════════════
+        # QUEUE: Наступні 5 файлів
+        # ═══════════════════════════════════════════════════════════
+        if self.file_queue:
+            queue_lines = render_queue(self.file_queue)
+            queue_texts = [Text.from_markup(line) for line in queue_lines]
 
-            # Статус з іконкою
-            status_icon = {
-                "processing": "⚙️",
-                "success": "✅",
-                "error": "❌",
-            }.get(self.current_file.status, "📄")
-
-            status_color = {
-                "processing": THEME.processing,
-                "success": THEME.success,
-                "error": THEME.error,
-            }.get(self.current_file.status, THEME.info)
-
-            file_table.add_row(
-                "📄 Файл:",
-                Text(f"{status_icon} {self.current_file.name}", style=f"bold {THEME.file_name}")
-            )
-
-            if self.current_file.stage:
-                file_table.add_row(
-                    "🔄 Етап:",
-                    Text(self._translate_stage(self.current_file.stage), style=status_color)
-                )
-
-            if self.current_file.category:
-                file_table.add_row(
-                    "🏷️  Категорія:",
-                    Text(self.current_file.category, style=f"bold {THEME.category}")
-                )
-
-            if self.current_file.error_msg:
-                file_table.add_row(
-                    "⚠️  Помилка:",
-                    Text(self.current_file.error_msg, style=THEME.error)
-                )
-
-            current_file_panel = Panel(
-                file_table,
-                title=f"[bold {THEME.progress_percent}]🔍 ПОТОЧНИЙ ФАЙЛ",
-                border_style=THEME.progress_bar,
+            queue_panel = Panel(
+                Group(*queue_texts) if queue_texts else Text("Черга порожня", style="dim"),
+                title=f"[{THEME.dim_text}]⏳ QUEUE (next 5 files)[/]",
+                border_style=THEME.separator,
                 padding=(0, 1),
             )
-            components.append(current_file_panel)
+            components.append(queue_panel)
 
-        # Прогрес-бар
-        if self.progress:
-            progress_panel = Panel(
-                self.progress,
-                title=f"[bold {THEME.success}]⏳ ПРОГРЕС ВИКОНАННЯ",
-                border_style=THEME.success,
-                padding=(0, 1),
+        # ═══════════════════════════════════════════════════════════
+        # FOOTER: Детальна статистика
+        # ═══════════════════════════════════════════════════════════
+        stats_table = Table.grid(padding=(0, 2))
+        stats_table.add_row(
+            f"[{THEME.success}]✅ Completed: [{THEME.number_success}]{self.metrics.success_count}[/]",
+            f"[{THEME.warning}]⚠️  Duplicates: [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+            f"[{THEME.error}]❌ Errors: [{THEME.number_error}]{self.metrics.error_count}[/]",
+            f"[{THEME.info}]⏳ Pending: [{THEME.number_primary}]{len(self.file_queue)}[/]",
+        )
+
+        if self.metrics.llm_requests > 0:
+            stats_table.add_row(
+                f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
+                f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
+                f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(total_completed, 1) * 100):.0f}%[/]",
+                "",
             )
-            components.append(progress_panel)
+
+        footer_panel = Panel(
+            stats_table,
+            title=f"[{THEME.header}]📈 SESSION STATISTICS[/]",
+            border_style=THEME.border,
+            padding=(0, 1),
+        )
+        components.append(footer_panel)
 
         return Group(*components)
 
