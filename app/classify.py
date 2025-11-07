@@ -31,16 +31,23 @@ def classify_text(
     text: str,
     default_category: str = "інше",
     llm_client: Optional["LLMClient"] = None,
+    filename: str = "",
 ) -> Dict[str, Optional[str]]:
     """
     Класифікувати текст документа.
 
     Якщо надано llm_client і він увімкнений, використовується LLM.
     Інакше використовуються прості евристики на основі ключових слів.
+
+    Args:
+        text: Текст документа
+        default_category: Категорія за замовчуванням
+        llm_client: LLM клієнт (опціонально)
+        filename: Назва файлу (для логування)
     """
     # Спробувати LLM якщо доступний
     if llm_client and llm_client.enabled and text.strip():
-        llm_category, llm_date, llm_summary = llm_client.analyze_document(text)
+        llm_category, llm_date, llm_summary = llm_client.analyze_document(text, filename=filename)
         if llm_category or llm_date:
             return {
                 "category": llm_category or default_category,

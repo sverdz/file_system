@@ -25,3 +25,8 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
+*.pyc
+*.pyc
+*.pyc
+app/__pycache__/__init__.cpython-313.pyc
+app/__pycache__/classify.cpython-313.pyc
