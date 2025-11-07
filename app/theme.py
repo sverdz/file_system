@@ -21,11 +21,11 @@ class ColorTheme:
     success: str = "bright_green"         # Успішні операції
     error: str = "bright_red"             # Помилки
     warning: str = "bright_yellow"        # Попередження
-    info: str = "bright_cyan"             # Інформація
-    processing: str = "bright_blue"       # В процесі
+    info: str = "yellow"                  # Інформація
+    processing: str = "bright_magenta"    # В процесі
 
     # Числові показники
-    number_primary: str = "bright_cyan"   # Основні числа (N/k, відсотки)
+    number_primary: str = "bright_yellow" # Основні числа (N/k, відсотки)
     number_total: str = "bright_white"    # Загальні суми
     number_success: str = "bright_green"  # Успішні підрахунки
     number_error: str = "bright_red"      # Кількість помилок
@@ -35,19 +35,19 @@ class ColorTheme:
     # ═══════════════════════════════════════════════════════════
 
     # Прогрес-бар
-    progress_bar: str = "bright_cyan"     # Заповнення прогрес-бару
+    progress_bar: str = "bright_green"    # Заповнення прогрес-бару
     progress_text: str = "bright_white"   # Текст прогресу
     progress_percent: str = "bright_yellow" # Відсоток виконання
 
     # Заголовки та рамки
-    header: str = "bright_cyan"           # Заголовки секцій
-    border: str = "bright_blue"           # Рамки та розділювачі
+    header: str = "bright_yellow"         # Заголовки секцій
+    border: str = "yellow"                # Рамки та розділювачі
     title: str = "bold bright_white"      # Головні заголовки
 
     # Категорії файлів
     category: str = "bright_magenta"      # Назва категорії
     file_name: str = "bright_white"       # Ім'я файлу
-    file_path: str = "bright_blue"        # Шлях до файлу
+    file_path: str = "green"              # Шлях до файлу
 
     # Дублікати
     duplicate: str = "bright_yellow"      # Виявлені дублікати
@@ -55,16 +55,20 @@ class ColorTheme:
 
     # LLM та класифікація
     llm_request: str = "bright_magenta"   # LLM запити
-    llm_response: str = "bright_cyan"     # LLM відповіді
+    llm_response: str = "bright_green"    # LLM відповіді
     classification: str = "bright_green"  # Класифікація документів
 
     # ═══════════════════════════════════════════════════════════
     # ДЕКОРАТИВНІ ЕЛЕМЕНТИ
     # ═══════════════════════════════════════════════════════════
 
-    decoration: str = "bright_blue"       # Декоративні лінії
-    separator: str = "cyan"               # Роздільники
-    background_accent: str = "blue"       # Фонові акценти
+    decoration: str = "yellow"            # Декоративні лінії
+    separator: str = "yellow"             # Роздільники
+    background_accent: str = "green"      # Фонові акценти
+
+    # Хакерські елементи
+    hex_address: str = "bright_yellow"    # Hex адреси (0x7F8A)
+    sha_hash: str = "green"               # SHA хеші
 
 
 # Глобальна тема за замовчуванням
