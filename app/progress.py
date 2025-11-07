@@ -6,10 +6,12 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, Tuple, Optional
 
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.layout import Layout
+from rich.live import Live
+from rich.text import Text
 
 from .theme import THEME, markup, format_number, format_percent, format_status
 
@@ -59,6 +61,7 @@ class ProgressTracker:
         self.progress: Optional[Progress] = None
         self.task_ids: Dict[str, int] = {}
         self.console = Console()
+        self.live: Optional[Live] = None
 
         # Нові атрибути для компактного відображення
         self.metrics = ProcessingMetrics()
@@ -67,28 +70,40 @@ class ProgressTracker:
         self.use_compact_view = True  # За замовчуванням компактний вигляд
 
     def start_visual(self) -> None:
-        """Запустити візуальний прогрес-бар"""
+        """Запустити візуальний прогрес-бар з Live display"""
         if self.use_compact_view:
-            # Компактний вигляд: один прогрес-бар
+            # Створити прогрес-бар
             self.progress = Progress(
                 SpinnerColumn(style=THEME.processing),
-                TextColumn("{task.description}"),
-                BarColumn(complete_style=THEME.progress_bar, finished_style=THEME.success),
+                TextColumn(f"[bold {THEME.title}]{{task.description}}"),
+                BarColumn(
+                    bar_width=40,
+                    complete_style=THEME.progress_bar,
+                    finished_style=THEME.success
+                ),
                 TextColumn(f"[{THEME.progress_percent}]{{task.percentage:>3.0f}}%"),
                 TextColumn(f"[{THEME.number_primary}]{{task.completed}}/{{task.total}}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 console=self.console,
             )
-            self.progress.start()
 
             # Один глобальний прогрес
             task_id = self.progress.add_task(
-                markup(THEME.title, "Обробка файлів"),
+                "⚙️  Обробка файлів",
                 total=100,
                 completed=0
             )
             self.task_ids["global"] = task_id
+
+            # Запустити Live display
+            self.live = Live(
+                self._render_display(),
+                console=self.console,
+                refresh_per_second=4,
+                transient=False
+            )
+            self.live.start()
         else:
             # Старий вигляд: окремі етапи
             self.progress = Progress(
@@ -132,8 +147,12 @@ class ProgressTracker:
 
     def stop_visual(self) -> None:
         """Зупинити візуальний прогрес-бар"""
+        if self.live:
+            self.live.stop()
+            self.live = None
         if self.progress:
             self.progress.stop()
+            self.progress = None
 
     def _translate_stage(self, stage: str) -> str:
         """Перекласти назву етапу на українську"""
@@ -170,6 +189,9 @@ class ProgressTracker:
                 # Оновити глобальний прогрес
                 global_percent = self.percentage()
                 self.progress.update(self.task_ids["global"], completed=global_percent)
+                # Оновити Live display
+                if self.live:
+                    self.live.update(self._render_display())
             elif stage in self.task_ids:
                 self.progress.update(self.task_ids[stage], completed=sp.completed)
 
@@ -199,6 +221,10 @@ class ProgressTracker:
         if llm_responses is not None:
             self.metrics.llm_responses = llm_responses
 
+        # Оновити Live display
+        if self.live and self.use_compact_view:
+            self.live.update(self._render_display())
+
     def set_current_file(
         self,
         name: str = "",
@@ -216,43 +242,95 @@ class ProgressTracker:
         self.current_file.status = status
         self.current_file.error_msg = error_msg
 
-    def show_status(self) -> None:
-        """Показати компактний статус обробки."""
-        if not self.use_compact_view:
-            return
+        # Оновити Live display
+        if self.live and self.use_compact_view:
+            self.live.update(self._render_display())
+
+    def _render_display(self) -> Group:
+        """Відрендерити живий дисплей з панелями."""
+        components = []
+
+        # Панель статусу з загальною інформацією
+        status_table = Table.grid(padding=(0, 3))
+        status_table.add_column(style=f"bold {THEME.info}")
+        status_table.add_column(style=f"bold {THEME.success}")
+        status_table.add_column(style=f"bold {THEME.duplicate}")
 
         # Розрахувати час сесії
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
-        # Створити таблицю метрик
-        metrics_table = Table.grid(padding=(0, 2))
-        metrics_table.add_column(style=THEME.secondary_text)
-        metrics_table.add_column(style=THEME.number_primary)
+        # Загальний прогрес
+        total_completed = sum(sp.completed for sp in self.stages.values())
+        total_total = sum(sp.total for sp in self.stages.values())
 
-        if self.metrics.duplicate_groups > 0:
-            metrics_table.add_row(
-                "Груп дублікатів:",
-                format_number(self.metrics.duplicate_groups, THEME.duplicate)
+        status_table.add_row(
+            f"⏱️  Час: {elapsed_str}",
+            f"📊 Прогрес: {self.percentage():.1f}%",
+            f"🔍 Дублікати: {self.metrics.duplicate_groups} груп"
+        )
+
+        status_panel = Panel(
+            status_table,
+            title=f"[bold {THEME.title}]╔═══ СТАТУС ОБРОБКИ ═══╗",
+            border_style=THEME.border,
+            padding=(0, 1),
+        )
+        components.append(status_panel)
+
+        # Панель метрик
+        if (self.metrics.success_count > 0 or self.metrics.error_count > 0 or
+            self.metrics.llm_requests > 0):
+            metrics_table = Table.grid(padding=(0, 2))
+            metrics_table.add_column(style=THEME.info, width=25)
+            metrics_table.add_column(style="bold", justify="right")
+
+            if self.metrics.success_count > 0:
+                metrics_table.add_row(
+                    "✅ Успішно оброблено:",
+                    markup(THEME.success, str(self.metrics.success_count))
+                )
+            if self.metrics.error_count > 0:
+                metrics_table.add_row(
+                    "❌ Помилок:",
+                    markup(THEME.error, str(self.metrics.error_count))
+                )
+            if self.metrics.skipped_count > 0:
+                metrics_table.add_row(
+                    "⏭️  Пропущено:",
+                    markup(THEME.warning, str(self.metrics.skipped_count))
+                )
+            if self.metrics.llm_requests > 0:
+                metrics_table.add_row(
+                    "🤖 LLM запитів:",
+                    markup(THEME.llm_request, str(self.metrics.llm_requests))
+                )
+            if self.metrics.llm_responses > 0:
+                metrics_table.add_row(
+                    "💬 LLM відповідей:",
+                    markup(THEME.llm_response, str(self.metrics.llm_responses))
+                )
+
+            metrics_panel = Panel(
+                metrics_table,
+                title=f"[bold {THEME.header}]📈 МЕТРИКИ",
+                border_style=THEME.processing,
+                padding=(0, 1),
             )
-        if self.metrics.error_count > 0:
-            metrics_table.add_row(
-                "Помилок:",
-                format_number(self.metrics.error_count, THEME.error)
-            )
-        if self.metrics.success_count > 0:
-            metrics_table.add_row(
-                "Успішно:",
-                format_number(self.metrics.success_count, THEME.success)
-            )
+            components.append(metrics_panel)
 
         # Панель поточного файлу
         if self.current_file.name:
+            file_table = Table.grid(padding=(0, 1))
+            file_table.add_column("Параметр", style=THEME.info, width=15)
+            file_table.add_column("Значення", style="bold")
+
+            # Статус з іконкою
             status_icon = {
-                "processing": "⏳",
-                "success": "✓",
-                "error": "✗",
-            }.get(self.current_file.status, "•")
+                "processing": "⚙️",
+                "success": "✅",
+                "error": "❌",
+            }.get(self.current_file.status, "📄")
 
             status_color = {
                 "processing": THEME.processing,
@@ -260,39 +338,48 @@ class ProgressTracker:
                 "error": THEME.error,
             }.get(self.current_file.status, THEME.info)
 
-            current_file_text = (
-                f"{markup(status_color, status_icon)} {markup(THEME.file_name, self.current_file.name)}\n"
-                f"  {markup(THEME.dim_text, 'Етап:')} {markup(THEME.info, self.current_file.stage)}"
+            file_table.add_row(
+                "📄 Файл:",
+                Text(f"{status_icon} {self.current_file.name}", style=f"bold {THEME.file_name}")
             )
+
+            if self.current_file.stage:
+                file_table.add_row(
+                    "🔄 Етап:",
+                    Text(self._translate_stage(self.current_file.stage), style=status_color)
+                )
 
             if self.current_file.category:
-                current_file_text += f" | {markup(THEME.dim_text, 'Категорія:')} {markup(THEME.category, self.current_file.category)}"
+                file_table.add_row(
+                    "🏷️  Категорія:",
+                    Text(self.current_file.category, style=f"bold {THEME.category}")
+                )
 
             if self.current_file.error_msg:
-                current_file_text += f"\n  {markup(THEME.error, f'⚠ {self.current_file.error_msg}')}"
+                file_table.add_row(
+                    "⚠️  Помилка:",
+                    Text(self.current_file.error_msg, style=THEME.error)
+                )
 
-            file_panel = Panel(
-                current_file_text,
-                title=markup(THEME.header, "Поточний файл"),
-                border_style=THEME.border,
+            current_file_panel = Panel(
+                file_table,
+                title=f"[bold {THEME.progress_percent}]🔍 ПОТОЧНИЙ ФАЙЛ",
+                border_style=THEME.progress_bar,
                 padding=(0, 1),
             )
-        else:
-            file_panel = None
+            components.append(current_file_panel)
 
-        # Відобразити все
-        self.console.print()
-        if metrics_table.row_count > 0:
-            metrics_panel = Panel(
-                metrics_table,
-                title=markup(THEME.header, "Метрики"),
-                border_style=THEME.border,
+        # Прогрес-бар
+        if self.progress:
+            progress_panel = Panel(
+                self.progress,
+                title=f"[bold {THEME.success}]⏳ ПРОГРЕС ВИКОНАННЯ",
+                border_style=THEME.success,
                 padding=(0, 1),
             )
-            self.console.print(metrics_panel)
+            components.append(progress_panel)
 
-        if file_panel:
-            self.console.print(file_panel)
+        return Group(*components)
 
     def percentage(self) -> float:
         total_weight = sum(sp.weight for sp in self.stages.values())
