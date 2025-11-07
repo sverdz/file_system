@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 import requests
 from rich.console import Console
 
@@ -12,25 +13,41 @@ console = Console()
 class LLMClient:
     """Клієнт для роботи з LLM API (Claude та ChatGPT)."""
 
+    # Ліміти для запитів/відповідей
+    MAX_INPUT_LENGTH = 1000  # Максимум символів на вхід
+    MAX_OUTPUT_DISPLAY = 500  # Максимум символів для відображення в TUI
+
     def __init__(
         self,
         provider: str,
         api_key: str,
         model: str,
         enabled: bool = False,
+        session_dir: Optional[Path] = None,
     ):
         self.provider = provider
         self.api_key = api_key
         self.model = model
         self.enabled = enabled
+        self.session_dir = session_dir
         self.request_count = 0
+        self.response_count = 0
         self.total_tokens = 0
+        self.tokens_sent = 0
+        self.tokens_received = 0
+
+        # Лог всіх запитів/відповідей для сесії
+        self.request_log: List[Dict] = []
 
     def analyze_document(
-        self, text: str, max_length: int = 2000
+        self, text: str, filename: str = ""
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Аналізувати документ за допомогою LLM.
+
+        Args:
+            text: Текст документа
+            filename: Назва файлу (для логування)
 
         Returns:
             (category, date, summary) або (None, None, None) якщо LLM вимкнено
@@ -38,8 +55,8 @@ class LLMClient:
         if not self.enabled or not self.api_key:
             return None, None, None
 
-        # Обрізаємо текст до розумного розміру
-        text_sample = text[:max_length] if len(text) > max_length else text
+        # Обрізаємо текст до встановленого ліміту (1000 символів)
+        text_sample = text[:self.MAX_INPUT_LENGTH] if len(text) > self.MAX_INPUT_LENGTH else text
 
         prompt = f"""Проаналізуй цей документ і дай відповідь у форматі JSON:
 
@@ -54,16 +71,10 @@ class LLMClient:
 Відповідай тільки валідним JSON без додаткового тексту."""
 
         try:
-            console.print(
-                f"\n[dim]🤖 LLM запит ({self.provider}):[/dim]",
-                style="dim",
-            )
-            console.print(f"[dim]   Текст: {len(text_sample)} символів[/dim]")
-
             response_text = self._make_request(prompt)
 
             if response_text:
-                console.print(f"[dim]✓ LLM відповідь отримано ({len(response_text)} символів)[/dim]")
+                self.response_count += 1
 
                 # Парсимо JSON
                 try:
@@ -78,25 +89,44 @@ class LLMClient:
                     data = json.loads(clean_response)
                     category = data.get("category")
                     date = data.get("date")
-                    summary = data.get("summary")
+                    summary_full = data.get("summary", "")
 
-                    console.print(
-                        f"[dim]   Категорія: {category}, Дата: {date}[/dim]"
+                    # Обрізаємо summary до ліміту для відображення (500 символів)
+                    summary_display = summary_full[:self.MAX_OUTPUT_DISPLAY] if len(summary_full) > self.MAX_OUTPUT_DISPLAY else summary_full
+
+                    # Логуємо запит/відповідь
+                    self._log_request(
+                        filename=filename,
+                        input_text=text_sample,
+                        category=category,
+                        date=date,
+                        summary_full=summary_full,
+                        summary_display=summary_display,
                     )
-                    console.print(f"[dim]   Опис: {summary[:50]}...[/dim]")
 
-                    return category, date, summary
+                    return category, date, summary_display
                 except json.JSONDecodeError as e:
+                    # Тільки при помилці виводимо в консоль
                     console.print(
-                        f"[yellow]⚠ Помилка парсингу JSON: {e}[/yellow]"
+                        f"[yellow]⚠ Помилка парсингу JSON від LLM: {e}[/yellow]"
                     )
-                    console.print(f"[dim]Відповідь: {response_text[:200]}[/dim]")
+                    self._log_request(
+                        filename=filename,
+                        input_text=text_sample,
+                        error=str(e),
+                    )
                     return None, None, None
             else:
                 return None, None, None
 
         except Exception as e:
+            # Тільки при помилці виводимо в консоль
             console.print(f"[yellow]⚠ Помилка LLM запиту: {e}[/yellow]")
+            self._log_request(
+                filename=filename,
+                input_text=text_sample,
+                error=str(e),
+            )
             return None, None, None
 
     def _make_request(self, prompt: str) -> Optional[str]:
@@ -139,8 +169,11 @@ class LLMClient:
             result = response.json()
             # Оновлюємо статистику
             if "usage" in result:
-                self.total_tokens += result["usage"].get("input_tokens", 0)
-                self.total_tokens += result["usage"].get("output_tokens", 0)
+                input_tokens = result["usage"].get("input_tokens", 0)
+                output_tokens = result["usage"].get("output_tokens", 0)
+                self.tokens_sent += input_tokens
+                self.tokens_received += output_tokens
+                self.total_tokens += input_tokens + output_tokens
 
             content = result.get("content", [])
             if content and len(content) > 0:
@@ -177,6 +210,10 @@ class LLMClient:
             result = response.json()
             # Оновлюємо статистику
             if "usage" in result:
+                prompt_tokens = result["usage"].get("prompt_tokens", 0)
+                completion_tokens = result["usage"].get("completion_tokens", 0)
+                self.tokens_sent += prompt_tokens
+                self.tokens_received += completion_tokens
                 self.total_tokens += result["usage"].get("total_tokens", 0)
 
             choices = result.get("choices", [])
@@ -193,8 +230,90 @@ class LLMClient:
         """Отримати статистику використання."""
         return {
             "requests": self.request_count,
+            "responses": self.response_count,
             "tokens": self.total_tokens,
+            "tokens_sent": self.tokens_sent,
+            "tokens_received": self.tokens_received,
         }
+
+    def _log_request(
+        self,
+        filename: str,
+        input_text: str,
+        category: Optional[str] = None,
+        date: Optional[str] = None,
+        summary_full: Optional[str] = None,
+        summary_display: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Залогувати запит/відповідь для подальшого збереження.
+
+        Args:
+            filename: Назва файлу
+            input_text: Вхідний текст (обрізаний до MAX_INPUT_LENGTH)
+            category: Категорія з відповіді
+            date: Дата з відповіді
+            summary_full: Повний summary (необрізаний)
+            summary_display: Summary для відображення (обрізаний до MAX_OUTPUT_DISPLAY)
+            error: Помилка (якщо була)
+        """
+        from datetime import datetime, timezone
+
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "filename": filename,
+            "provider": self.provider,
+            "model": self.model,
+            "input_length": len(input_text),
+            "input_text": input_text,
+            "category": category,
+            "date": date,
+            "summary_full": summary_full,
+            "summary_display": summary_display,
+            "summary_truncated": len(summary_full or "") > self.MAX_OUTPUT_DISPLAY if summary_full else False,
+            "error": error,
+            "request_number": self.request_count,
+        }
+
+        self.request_log.append(log_entry)
+
+    def save_log_to_file(self, session_dir: Path) -> Optional[Path]:
+        """
+        Зберегти лог запитів/відповідей у файл сесії.
+
+        Args:
+            session_dir: Директорія сесії
+
+        Returns:
+            Path до створеного файлу або None
+        """
+        if not self.request_log:
+            return None
+
+        log_path = session_dir / "llm_full_log.json"
+
+        try:
+            log_data = {
+                "provider": self.provider,
+                "model": self.model,
+                "limits": {
+                    "max_input_length": self.MAX_INPUT_LENGTH,
+                    "max_output_display": self.MAX_OUTPUT_DISPLAY,
+                },
+                "statistics": self.get_stats(),
+                "requests": self.request_log,
+            }
+
+            log_path.write_text(
+                json.dumps(log_data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+
+            return log_path
+        except Exception as e:
+            console.print(f"[yellow]⚠ Помилка збереження LLM логу: {e}[/yellow]")
+            return None
 
 
 __all__ = ["LLMClient"]
