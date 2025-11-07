@@ -46,6 +46,10 @@ class Config(BaseModel):
     version: str = CONFIG_VERSION
     root: Path = Path.cwd()
     rename_template: str = DEFAULT_TEMPLATE
+    # Нові параметри для короткого формату перейменування
+    use_short_format: bool = True  # Використовувати короткий формат (20 символів)
+    use_short_date: bool = False  # Використовувати YYMMDD замість YYYYMMDD
+    max_filename_length: int = MAX_FILENAME_LENGTH  # Максимальна довжина без розширення
     category_map: list[str] = Field(default_factory=lambda: list(DEFAULT_CATEGORY_MAP))
     dedup: DedupSettings = Field(default_factory=DedupSettings)
     duplicates_policy: DuplicatePolicy = Field(default_factory=DuplicatePolicy)
