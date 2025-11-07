@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -420,7 +421,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             "classify": 1.0,
             "rename": 1.0,
             "inventory": 1.0,
-        }
+        },
+        scan_dir=str(cfg.root_path),  # Передати папку сканування
     )
 
     # Запустити візуальний прогрес-бар
@@ -483,6 +485,11 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tracker.set_stage_total("scan", len(metas))
         tracker.increment("scan", len(metas))
         tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
+
+        # Заповнити чергу файлів для хакерського інтерфейсу
+        file_paths = [str(meta.path) for meta in metas]
+        tracker.populate_queue(file_paths)
+
         update_progress(run_dir, tracker)
 
         tracker.update_description("dedup", "Аналіз дублікатів...")
@@ -505,15 +512,21 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tracker.set_stage_total("extract", len(metas))
         error_count = 0
         for idx, meta in enumerate(metas, 1):
+            # Видалити з черги
+            tracker.remove_from_queue(meta.path.name)
+
             # Встановити поточний файл
             tracker.set_current_file(
                 name=meta.path.name,
                 path=str(meta.path),
-                stage="витяг тексту",
+                stage="extract",
                 status="processing",
             )
 
             tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
+
+            # Засікти час початку обробки
+            start_time = time.time()
             try:
                 ensure_hash(meta)
                 result = extract_text(meta, cfg.ocr_lang)
@@ -533,21 +546,40 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 )
 
                 # Успішно оброблено
+                extract_time = time.time() - start_time
+
                 tracker.set_current_file(
                     name=meta.path.name,
+                    path=str(meta.path),
                     category=category,
-                    stage="витяг тексту",
+                    stage="classify",
                     status="success",
                 )
+
+                # Додати в лог
+                llm_response = classification.get("summary", "") or summary
+                tracker.add_to_log(
+                    status="success",
+                    text_length=len(result.text),
+                    llm_response=llm_response[:100] if llm_response else "",  # Перші 100 символів
+                    category=category,
+                    processing_time={
+                        "extract": extract_time,
+                        "classify": extract_time,  # Обидва етапи відбуваються разом
+                    },
+                )
+
             except Exception as exc:
                 # Use fallback values if extraction fails
                 error_count += 1
                 error_msg = f"Не вдалося обробити: {exc}"
                 console.print(markup(THEME.warning, f"⚠ {error_msg}"))
+                extract_time = time.time() - start_time
 
                 tracker.set_current_file(
                     name=meta.path.name,
-                    stage="витяг тексту",
+                    path=str(meta.path),
+                    stage="extract",
                     status="error",
                     error_msg=str(exc),
                 )
@@ -562,6 +594,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 )
 
                 tracker.update_metrics(error_count=error_count)
+
+                # Додати в лог як помилку
+                tracker.add_to_log(
+                    status="error",
+                    processing_time={"extract": extract_time},
+                )
 
             tracker.increment("extract")
 
