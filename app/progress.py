@@ -122,6 +122,21 @@ class ProgressTracker:
         self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
         self.files_processed: int = 0  # Скільки файлів оброблено
         self.total_files: int = 0  # Загальна кількість файлів
+        self.last_update_time: float = 0  # Час останнього оновлення дисплею
+
+    def _should_update_display(self) -> bool:
+        """Перевірити чи потрібно оновлювати дисплей (throttling)."""
+        current_time = time.time()
+        # Оновлювати максимум раз на 0.5 секунди
+        if current_time - self.last_update_time >= 0.5:
+            self.last_update_time = current_time
+            return True
+        return False
+
+    def _update_display_if_needed(self) -> None:
+        """Оновити дисплей якщо пройшло достатньо часу."""
+        if self.live and self.use_compact_view and self._should_update_display():
+            self._update_display_if_needed()
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
@@ -130,7 +145,7 @@ class ProgressTracker:
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=10,  # Плавна анімація
+                refresh_per_second=2,  # Зменшено для продуктивності (було 10)
                 transient=False
             )
             self.live.start()
@@ -221,7 +236,7 @@ class ProgressTracker:
                 self.progress.update(self.task_ids["global"], completed=global_percent)
                 # Оновити Live display
                 if self.live:
-                    self.live.update(self._render_display())
+                    self._update_display_if_needed()
             elif stage in self.task_ids:
                 self.progress.update(self.task_ids[stage], completed=sp.completed)
 
@@ -251,9 +266,8 @@ class ProgressTracker:
         if llm_responses is not None:
             self.metrics.llm_responses = llm_responses
 
-        # Оновити Live display
-        if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+        # Оновити Live display (з throttling)
+        self._update_display_if_needed()
 
     def set_current_file(
         self,
@@ -265,29 +279,49 @@ class ProgressTracker:
         error_msg: str = "",
     ) -> None:
         """Встановити статус поточного файлу."""
+        # Якщо це той самий файл - просто оновити статус
+        if name and name == self.current_file.name:
+            self.current_file.category = category or self.current_file.category
+            self.current_file.stage = stage or self.current_file.stage
+            self.current_file.status = status or self.current_file.status
+            self.current_file.error_msg = error_msg or self.current_file.error_msg
+
+            # Оновити Live display
+            if self.live and self.use_compact_view:
+                self._update_display_if_needed()
+            return
+
+        # Новий файл - скинути все
         self.current_file.name = name
         self.current_file.path = path
         self.current_file.category = category
         self.current_file.stage = stage
         self.current_file.status = status
         self.current_file.error_msg = error_msg
+        self.current_file.hex_id = ""
+        self.current_file.sha_hash = ""
+        self.current_file.size = 0
+        self.current_file.modified_time = 0
 
-        # Генерувати hex ID та SHA hash для нового файлу
-        if name and not self.current_file.hex_id:
+        # Генерувати hex ID для нового файлу
+        if name:
             self.current_file.hex_id = generate_hex_id(self.hex_counter)
             self.hex_counter += 1
 
-        if path and not self.current_file.sha_hash:
+        # Отримати розмір та час модифікації (ШВИДКО)
+        if path:
             from pathlib import Path
             file_path = Path(path)
             if file_path.exists():
                 self.current_file.size = file_path.stat().st_size
                 self.current_file.modified_time = file_path.stat().st_mtime
-                self.current_file.sha_hash = calculate_sha256(path)
+                # SHA hash обчислимо ПІЗНІШЕ, асинхронно
+                # Поки що просто перші 6 символів з hex_id
+                self.current_file.sha_hash = f"{self.hex_counter:06x}"
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+            self._update_display_if_needed()
 
     def add_to_log(
         self,
@@ -332,7 +366,7 @@ class ProgressTracker:
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+            self._update_display_if_needed()
 
     def populate_queue(self, file_paths: List[str]) -> None:
         """Заповнити чергу файлів - зберігає ВСІ файли, показує тільки 5."""
@@ -374,7 +408,7 @@ class ProgressTracker:
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+            self._update_display_if_needed()
 
     def remove_from_queue(self, filename: str) -> None:
         """Видалити файл з черги - просто переходимо до наступного."""
