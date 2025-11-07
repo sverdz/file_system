@@ -116,8 +116,12 @@ class ProgressTracker:
         # Хакерський інтерфейс
         self.scan_dir = scan_dir  # Поточна папка сканування
         self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів
-        self.file_queue: List[QueuedFile] = []  # Черга файлів
+        self.file_queue: List[QueuedFile] = []  # Черга файлів (ТІЛЬКИ наступні 5!)
+        self.all_files: List[str] = []  # ВСІ файли для обробки
+        self.current_file_index: int = 0  # Поточний індекс в all_files
         self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
+        self.files_processed: int = 0  # Скільки файлів оброблено
+        self.total_files: int = 0  # Загальна кількість файлів
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
@@ -317,39 +321,67 @@ class ProgressTracker:
 
         self.file_log.append(entry)
 
+        # Збільшити лічильник оброблених файлів
+        self.files_processed += 1
+
+        # Оновити метрики успішності
+        if status == "success":
+            self.metrics.success_count += 1
+        elif status == "error":
+            self.metrics.error_count += 1
+
         # Оновити Live display
         if self.live and self.use_compact_view:
             self.live.update(self._render_display())
 
     def populate_queue(self, file_paths: List[str]) -> None:
-        """Заповнити чергу файлів."""
+        """Заповнити чергу файлів - зберігає ВСІ файли, показує тільки 5."""
         from pathlib import Path
+        from urllib.parse import unquote
+
+        self.all_files = file_paths
+        self.total_files = len(file_paths)
+        self.current_file_index = 0
+        self.file_queue.clear()
+
+        # Заповнити тільки перші 5 файлів
+        self._update_queue()
+
+    def _update_queue(self) -> None:
+        """Оновити чергу - показати наступні 5 файлів."""
+        from pathlib import Path
+        from urllib.parse import unquote
 
         self.file_queue.clear()
 
-        for file_path in file_paths:
+        # Показати наступні 5 файлів після поточного
+        start_idx = self.current_file_index
+        end_idx = min(start_idx + 5, len(self.all_files))
+
+        for i in range(start_idx, end_idx):
+            file_path = self.all_files[i]
             p = Path(file_path)
             if p.exists():
+                # Decode URL-encoded filename
+                display_name = unquote(p.name)
                 qf = QueuedFile(
-                    hex_id=generate_hex_id(self.hex_counter),
-                    filename=p.name,
+                    hex_id=generate_hex_id(self.hex_counter + i),
+                    filename=display_name[:60] + "..." if len(display_name) > 60 else display_name,  # Обрізати довгі імена
                     size=p.stat().st_size,
                     modified_date=format_date(p.stat().st_mtime),
                 )
                 self.file_queue.append(qf)
-                self.hex_counter += 1
 
         # Оновити Live display
         if self.live and self.use_compact_view:
             self.live.update(self._render_display())
 
     def remove_from_queue(self, filename: str) -> None:
-        """Видалити файл з черги."""
-        self.file_queue = [qf for qf in self.file_queue if qf.filename != filename]
-
-        # Оновити Live display
-        if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+        """Видалити файл з черги - просто переходимо до наступного."""
+        # Збільшити індекс поточного файлу
+        self.current_file_index += 1
+        # Оновити чергу (показати наступні 5)
+        self._update_queue()
 
     def _render_display(self) -> Group:
         """Відрендерити хакерський дисплей з файлами."""
@@ -365,9 +397,8 @@ class ProgressTracker:
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
-        total_completed = sum(sp.completed for sp in self.stages.values())
-        total_total = sum(sp.total for sp in self.stages.values())
-        files_progress = f"{total_completed}/{total_total}" if total_total > 0 else "0/0"
+        # Використовуємо files_processed замість суми stages
+        files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
         header_table = Table.grid(padding=(0, 2))
         header_table.add_row(
@@ -460,7 +491,7 @@ class ProgressTracker:
             stats_table.add_row(
                 f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
                 f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
-                f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(total_completed, 1) * 100):.0f}%[/]",
+                f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(self.files_processed, 1) * 100):.0f}%[/]",
                 "",
             )
 

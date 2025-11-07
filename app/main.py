@@ -593,9 +593,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                     date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
                 )
 
-                tracker.update_metrics(error_count=error_count)
-
-                # Додати в лог як помилку
+                # Додати в лог як помилку (метрики оновляться автоматично)
                 tracker.add_to_log(
                     status="error",
                     processing_time={"extract": extract_time},
