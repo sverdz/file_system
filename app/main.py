@@ -31,6 +31,7 @@ from app.rename import plan_renames
 from app.scan import FileMeta, ensure_hash, scan_directory
 from app.session import SessionManager
 from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
+from app.theme import THEME, markup, format_number, format_status, format_error, header_line
 
 colorama_init()
 console = Console()
@@ -57,16 +58,14 @@ def show_rename_preview(rename_plans: list, max_preview: int = 50) -> bool:
     Returns:
         True якщо користувач підтвердив, False якщо скасував
     """
-    console.print("\n[bold cyan]╔═══════════════════════════════════════════════════════════════╗[/bold cyan]")
-    console.print("[bold cyan]║       ПОПЕРЕДНІЙ ПЕРЕГЛЯД ПЕРЕЙМЕНУВАННЯ ФАЙЛІВ              ║[/bold cyan]")
-    console.print("[bold cyan]╚═══════════════════════════════════════════════════════════════╝[/bold cyan]\n")
+    console.print(header_line("ПОПЕРЕДНІЙ ПЕРЕГЛЯД ПЕРЕЙМЕНУВАННЯ ФАЙЛІВ"))
 
-    # Створити таблицю
-    table = Table(show_header=True, header_style="bold magenta", show_lines=True)
-    table.add_column("№", style="dim", width=5)
-    table.add_column("Старе ім'я", style="cyan", max_width=40)
-    table.add_column("→", justify="center", width=3)
-    table.add_column("Нове ім'я", style="green", max_width=40)
+    # Створити таблицю з новою кольоровою схемою
+    table = Table(show_header=True, header_style=THEME.header, show_lines=True, border_style=THEME.border)
+    table.add_column("№", style=THEME.dim_text, width=5)
+    table.add_column("Старе ім'я", style=THEME.file_name, max_width=40)
+    table.add_column("→", justify="center", width=3, style=THEME.info)
+    table.add_column("Нове ім'я", style=THEME.success, max_width=40)
     table.add_column("Довжина", justify="right", width=8)
     table.add_column("Колізія", justify="center", width=8)
 
@@ -80,10 +79,13 @@ def show_rename_preview(rename_plans: list, max_preview: int = 50) -> bool:
         # Довжина без розширення
         name_without_ext = Path(new_name).stem
         length = len(name_without_ext)
-        collision_mark = "[yellow]✓[/yellow]" if plan.collision else ""
+        collision_mark = markup(THEME.warning, "✓") if plan.collision else ""
 
         # Підсвітка якщо довжина більше 20
-        length_str = f"[red]{length}[/red]" if length > 20 else f"[green]{length}[/green]"
+        if length > 20:
+            length_str = markup(THEME.error, str(length))
+        else:
+            length_str = markup(THEME.success, str(length))
 
         table.add_row(
             str(idx),
@@ -98,23 +100,25 @@ def show_rename_preview(rename_plans: list, max_preview: int = 50) -> bool:
 
     # Якщо файлів більше ніж max_preview
     if total_files > preview_count:
-        console.print(f"\n[dim]... і ще {total_files - preview_count} файлів[/dim]")
+        console.print(markup(THEME.dim_text, f"\n... і ще {total_files - preview_count} файлів"))
 
-    # Статистика
-    console.print(f"\n[bold]Підсумок:[/bold]")
-    console.print(f"  • Всього файлів для перейменування: [cyan]{total_files}[/cyan]")
+    # Статистика з новою кольоровою схемою
+    console.print(f"\n{markup(THEME.title, 'Підсумок:')}")
+    console.print(f"  • Всього файлів для перейменування: {format_number(total_files)}")
+
     collisions = sum(1 for p in rename_plans if p.collision)
     if collisions > 0:
-        console.print(f"  • Файлів з колізіями (додано суфікс): [yellow]{collisions}[/yellow]")
+        console.print(f"  • Файлів з колізіями (додано суфікс): {format_number(collisions, THEME.warning)}")
 
     # Перевірка довжин
     too_long = sum(1 for p in rename_plans if len(Path(p.new_name).stem) > 20)
     if too_long > 0:
-        console.print(f"  • [red]⚠ УВАГА: {too_long} файлів перевищують ліміт 20 символів![/red]")
+        console.print(format_error(f"УВАГА: {too_long} файлів перевищують ліміт 20 символів!"))
 
     # Запит підтвердження
-    console.print("\n[bold yellow]Застосувати перейменування?[/bold yellow]")
-    response = input("Введіть 'y' або 'yes' для підтвердження, будь-що інше для скасування: ").strip().lower()
+    console.print(f"\n{markup(THEME.warning, 'Застосувати перейменування?')}")
+    prompt_text = markup(THEME.secondary_text, "Введіть 'y' або 'yes' для підтвердження: ")
+    response = input(prompt_text).strip().lower()
 
     return response in ('y', 'yes', 'так', 'т')
 
@@ -123,21 +127,21 @@ def main() -> None:
     try:
         cfg = load_config()
     except Exception as exc:
-        console.print(f"[red]Помилка завантаження конфігурації: {exc}[/red]")
-        console.print("Використовуємо налаштування за замовчуванням.")
+        console.print(format_error(f"Помилка завантаження конфігурації: {exc}"))
+        console.print(markup(THEME.dim_text, "Використовуємо налаштування за замовчуванням."))
         cfg = Config()
 
     while True:
         try:
-            console.print("\n[bold cyan]File Inventory Tool[/bold cyan]")
-            console.print("[1] Швидкий аналіз (dry-run)")
-            console.print("[2] Застосувати перейменування (commit)")
-            console.print("[3] Переглянути підсумок останнього запуску")
-            console.print("[4] Налаштування")
-            console.print("[5] Відновити незавершений запуск")
-            console.print("[6] Сортування та подання")
-            console.print("[7] Перевірити/переінсталювати залежності")
-            console.print("[8] Вихід")
+            console.print(f"\n{markup(THEME.title, 'File Inventory Tool')}")
+            console.print(markup(THEME.primary_text, "[1] Швидкий аналіз (dry-run)"))
+            console.print(markup(THEME.primary_text, "[2] Застосувати перейменування (commit)"))
+            console.print(markup(THEME.primary_text, "[3] Переглянути підсумок останнього запуску"))
+            console.print(markup(THEME.primary_text, "[4] Налаштування"))
+            console.print(markup(THEME.primary_text, "[5] Відновити незавершений запуск"))
+            console.print(markup(THEME.primary_text, "[6] Сортування та подання"))
+            console.print(markup(THEME.primary_text, "[7] Перевірити/переінсталювати залежності"))
+            console.print(markup(THEME.primary_text, "[8] Вихід"))
             choice = input("Оберіть опцію: ").strip()
             if choice == "1":
                 execute_pipeline(cfg, mode="dry-run", operation_type="SCAN")
@@ -150,7 +154,7 @@ def main() -> None:
                     sort_strategy = None
                     operation_type = "RENAME"
                     if sort_choice in {"", "y", "yes"}:
-                        console.print("1 = by_category, 2 = by_date, 3 = by_type")
+                        console.print(markup(THEME.info, "1 = by_category, 2 = by_date, 3 = by_type"))
                         mapping = {"1": "by_category", "2": "by_date", "3": "by_type"}
                         selected = input("Оберіть стратегію: ").strip()
                         sort_strategy = mapping.get(selected)
@@ -162,53 +166,53 @@ def main() -> None:
             elif choice == "4":
                 cfg = configure(cfg)
             elif choice == "5":
-                console.print("Відновлення ще не реалізоване у цій версії.")
+                console.print(markup(THEME.warning, "Відновлення ще не реалізоване у цій версії."))
             elif choice == "6":
                 sort_and_organize(cfg)
             elif choice == "7":
                 deps.ensure_ready()
             elif choice == "8":
-                console.print("До побачення!")
+                console.print(markup(THEME.success, "До побачення!"))
                 break
             else:
-                console.print("[yellow]Невірний вибір. Спробуйте ще раз.[/yellow]")
+                console.print(markup(THEME.warning, "Невірний вибір. Спробуйте ще раз."))
         except KeyboardInterrupt:
-            console.print("\n[yellow]Переривання... Зберігаю прогрес...[/yellow]")
+            console.print(markup(THEME.warning, "\nПереривання... Зберігаю прогрес..."))
             break
         except Exception as exc:
-            console.print(f"\n[red]═══ Неочікувана помилка ═══[/red]")
-            console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
-            console.print("\n[yellow]Натисніть Enter щоб повернутися до меню...[/yellow]")
+            console.print(f"\n{markup(THEME.error, '═══ Неочікувана помилка ═══')}")
+            console.print(format_error(f"{type(exc).__name__}: {exc}"))
+            console.print(markup(THEME.warning, "\nНатисніть Enter щоб повернутися до меню..."))
             input()  # Чекаємо натискання Enter
             # Продовжуємо цикл - повертаємось до меню
 
 
 def configure(cfg: Config) -> Config:
-    console.print("\n[bold cyan]═══ Налаштування File Inventory Tool ═══[/bold cyan]\n")
+    console.print(header_line("Налаштування File Inventory Tool"))
 
     # Налаштування папки
-    console.print(f"[cyan]1. Папка для аналізу:[/cyan] {cfg.root}")
+    console.print(f"{markup(THEME.header, '1. Папка для аналізу:')} {cfg.root}")
     new_root = input("   Вкажіть новий шлях (Enter щоб лишити): ").strip()
     if new_root:
         cfg.root = Path(new_root)
 
     # Налаштування OCR
-    console.print(f"\n[cyan]2. Мова OCR:[/cyan] {cfg.ocr_lang}")
+    console.print(f"\n{markup(THEME.header, '2. Мова OCR:')} {cfg.ocr_lang}")
     ocr = input("   Вкажіть мову (ukr+eng/eng/off, Enter щоб лишити): ").strip()
     if ocr:
         cfg.ocr_lang = ocr
 
     # Налаштування LLM
-    console.print(f"\n[cyan]3. LLM налаштування:[/cyan]")
-    console.print(f"   Поточний провайдер: {cfg.llm_provider}")
-    console.print(f"   LLM увімкнено: {cfg.llm_enabled}")
+    console.print(f"\n{markup(THEME.header, '3. LLM налаштування:')}")
+    console.print(f"   {markup(THEME.dim_text, 'Поточний провайдер:')} {cfg.llm_provider}")
+    console.print(f"   {markup(THEME.dim_text, 'LLM увімкнено:')} {cfg.llm_enabled}")
 
     llm_choice = input("\n   Налаштувати LLM? [y/N]: ").strip().lower()
     if llm_choice in {"y", "yes"}:
-        console.print("\n   [bold]Оберіть LLM провайдера:[/bold]")
-        console.print("   1 = Claude (Anthropic)")
-        console.print("   2 = ChatGPT (OpenAI)")
-        console.print("   3 = Вимкнути LLM")
+        console.print(f"\n   {markup(THEME.title, 'Оберіть LLM провайдера:')}")
+        console.print(markup(THEME.primary_text, "   1 = Claude (Anthropic)"))
+        console.print(markup(THEME.primary_text, "   2 = ChatGPT (OpenAI)"))
+        console.print(markup(THEME.primary_text, "   3 = Вимкнути LLM"))
 
         provider_choice = input("   Ваш вибір [1-3]: ").strip()
 
@@ -243,7 +247,7 @@ def configure(cfg: Config) -> Config:
 
             # Перевірка підключення
             if cfg.llm_api_key_claude:
-                console.print("\n   [yellow]Перевірка підключення...[/yellow]")
+                console.print(markup(THEME.warning, "\n   Перевірка підключення..."))
                 success, message = test_llm_connection("claude", cfg.llm_api_key_claude, cfg.llm_model)
                 console.print(f"   {message}")
 
@@ -279,84 +283,62 @@ def configure(cfg: Config) -> Config:
 
             # Перевірка підключення
             if cfg.llm_api_key_openai:
-                console.print("\n   [yellow]Перевірка підключення...[/yellow]")
+                console.print(markup(THEME.warning, "\n   Перевірка підключення..."))
                 success, message = test_llm_connection("chatgpt", cfg.llm_api_key_openai, cfg.llm_model)
                 console.print(f"   {message}")
 
         elif provider_choice == "3":
             cfg.llm_provider = "none"
             cfg.llm_enabled = False
-            console.print("   [yellow]LLM вимкнено[/yellow]")
+            console.print(markup(THEME.warning, "   LLM вимкнено"))
 
     save_config(cfg)
-    console.print("\n[green]✓ Налаштування збережено.[/green]")
+    console.print(format_status("\nНалаштування збережено.", is_error=False))
     return cfg
 
 
 def show_last_summary() -> None:
-    """Показати підсумок останньої сесії."""
-    session_manager = SessionManager()
-    latest_session = session_manager.get_latest_session()
-
-    if not latest_session:
-        console.print("[yellow]Немає збережених сесій.[/yellow]")
+    runs_dir = Path("runs")
+    if not runs_dir.exists():
+        console.print(markup(THEME.warning, "Немає запусків."))
         return
-
-    console.print(f"\n[bold cyan]Остання сесія:[/bold cyan] {latest_session.session_id}")
-    console.print(f"[cyan]Тип операції:[/cyan] {latest_session.operation_type}")
-    console.print(f"[cyan]Дата:[/cyan] {latest_session.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-    console.print(f"[cyan]Директорія:[/cyan] {latest_session.session_dir}")
-
-    # Показати файли в сесії
-    summary_file = latest_session.session_dir / "session_summary.txt"
-    if summary_file.exists():
-        console.print(f"\n[green]Підсумковий звіт:[/green]")
-        console.print(summary_file.read_text(encoding="utf-8"))
-    else:
-        inventory_path = latest_session.session_dir / "inventory.xlsx"
-        if inventory_path.exists():
-            console.print(f"\n[green]Файл інвентаризації:[/green] {inventory_path}")
-
-    # Показати список всіх файлів сесії
-    console.print(f"\n[bold]Файли сесії:[/bold]")
-    for file_path in sorted(latest_session.session_dir.glob("*")):
-        if file_path.is_file():
-            size = file_path.stat().st_size / 1024  # KB
-            console.print(f"  - {file_path.name} ({size:.1f} KB)")
+    run_dirs = sorted([p for p in runs_dir.iterdir() if p.is_dir()])
+    if not run_dirs:
+        console.print(markup(THEME.warning, "Немає запусків."))
+        return
+    latest = run_dirs[-1]
+    summary_path = latest / "inventory.xlsx"
+    console.print(f"{markup(THEME.header, 'Останній запуск:')} {latest.name}")
+    console.print(f"{markup(THEME.header, 'Файл інвентаризації:')} {summary_path}")
 
 
 def sort_and_organize(cfg: Config) -> None:
     """Окреме меню для сортування та організації файлів."""
-    console.print("\n[bold cyan]═══ Сортування та організація файлів ═══[/bold cyan]\n")
+    console.print(header_line("Сортування та організація файлів"))
 
-    # Знайти останню сесію сканування
-    session_manager = SessionManager()
-    source_session = session_manager.get_latest_session(operation_type="SCAN")
+    # Знайти останній запуск
+    latest_run = find_latest_run()
+    if not latest_run:
+        console.print(format_error("Помилка: Немає жодного запуску. Спочатку виконайте аналіз (пункт 1)."))
+        return
 
-    if not source_session:
-        # Якщо немає SCAN, спробувати будь-яку останню
-        source_session = session_manager.get_latest_session()
-        if not source_session:
-            console.print("[red]Помилка: Немає жодної сесії. Спочатку виконайте аналіз (пункт 1).[/red]")
-            return
-
-    console.print(f"[green]✓[/green] Використовується сесія: {source_session.session_id}")
+    console.print(format_status(f"Використовується запуск: {latest_run.name}", is_error=False))
 
     # Прочитати інвентаризацію
     try:
-        df = read_inventory(source_session.session_dir)
-        console.print(f"[green]✓[/green] Завантажено {len(df)} записів")
+        df = read_inventory(latest_run)
+        console.print(format_status(f"Завантажено {len(df)} записів", is_error=False))
     except Exception as e:
-        console.print(f"[red]Помилка читання інвентаризації: {e}[/red]")
+        console.print(format_error(f"Помилка читання інвентаризації: {e}"))
         return
 
     # Меню опцій
-    console.print("\n[bold]Оберіть дію:[/bold]")
-    console.print("[1] Сортувати файли за категоріями")
-    console.print("[2] Сортувати файли за датами")
-    console.print("[3] Сортувати файли за типами")
-    console.print("[4] Об'єднати всі файли з підпапок в одну папку")
-    console.print("[5] Повернутися до головного меню")
+    console.print(f"\n{markup(THEME.title, 'Оберіть дію:')}")
+    console.print(markup(THEME.primary_text, "[1] Сортувати файли за категоріями"))
+    console.print(markup(THEME.primary_text, "[2] Сортувати файли за датами"))
+    console.print(markup(THEME.primary_text, "[3] Сортувати файли за типами"))
+    console.print(markup(THEME.primary_text, "[4] Об'єднати всі файли з підпапок в одну папку"))
+    console.print(markup(THEME.primary_text, "[5] Повернутися до головного меню"))
 
     choice = input("\nВаш вибір: ").strip()
 
@@ -366,86 +348,63 @@ def sort_and_organize(cfg: Config) -> None:
     try:
         if choice == "1":
             # Сортування за категоріями
-            console.print("\n[cyan]Сортування за категоріями...[/cyan]")
+            console.print(markup(THEME.processing, "\nСортування за категоріями..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
             mapping = sort_files(root, files_to_sort, "by_category", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
-            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за категоріями")
+            console.print(format_status(f"Відсортовано {len(mapping)} файлів за категоріями", is_error=False))
 
         elif choice == "2":
             # Сортування за датами
-            console.print("\n[cyan]Сортування за датами...[/cyan]")
+            console.print(markup(THEME.processing, "\nСортування за датами..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
             mapping = sort_files(root, files_to_sort, "by_date", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
-            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за датами")
+            console.print(format_status(f"Відсортовано {len(mapping)} файлів за датами", is_error=False))
 
         elif choice == "3":
             # Сортування за типами
-            console.print("\n[cyan]Сортування за типами файлів...[/cyan]")
+            console.print(markup(THEME.processing, "\nСортування за типами файлів..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
             mapping = sort_files(root, files_to_sort, "by_type", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
-            console.print(f"[green]✓[/green] Відсортовано {len(mapping)} файлів за типами")
+            console.print(format_status(f"Відсортовано {len(mapping)} файлів за типами", is_error=False))
 
         elif choice == "4":
             # Об'єднання файлів
-            console.print("\n[cyan]Об'єднання файлів з підпапок...[/cyan]")
+            console.print(markup(THEME.processing, "\nОб'єднання файлів з підпапок..."))
             target_name = input("Назва цільової папки (Enter для '_flattened'): ").strip() or "_flattened"
             target_dir = root / target_name
 
-            console.print(f"[yellow]Всі файли з {root} будуть переміщені в {target_dir}[/yellow]")
+            console.print(markup(THEME.warning, f"Всі файли з {root} будуть переміщені в {target_dir}"))
             confirm = input("Продовжити? [y/N]: ").strip().lower()
 
             if confirm in {"y", "yes"}:
                 mapping = flatten_directory(root, target_dir, recursive=True)
                 file_updates = {str(k): str(v) for k, v in mapping.items()}
-                console.print(f"[green]✓[/green] Об'єднано {len(mapping)} файлів в {target_dir}")
+                console.print(format_status(f"Об'єднано {len(mapping)} файлів в {target_dir}", is_error=False))
             else:
-                console.print("[yellow]Скасовано[/yellow]")
+                console.print(markup(THEME.warning, "Скасовано"))
                 return
 
         elif choice == "5":
             return
 
         else:
-            console.print("[yellow]Невірний вибір[/yellow]")
+            console.print(markup(THEME.warning, "Невірний вибір"))
             return
 
         # Створити нову сесію для сортування
         if file_updates:
-            console.print("\n[cyan]Створення сесії сортування...[/cyan]")
+            console.print(markup(THEME.processing, "\nОновлення інвентаризації..."))
             strategy = {"1": "by_category", "2": "by_date", "3": "by_type", "4": "flattened"}.get(choice, "manual")
-
-            # Створити нову сесію SORT
-            sort_session = session_manager.create_session(f"SORT_{strategy.upper()}")
-            console.print(f"[green]✓[/green] Сесія створена: {sort_session.session_id}")
-
-            # Оновити інвентаризацію
-            update_inventory_after_sort(source_session.session_dir, file_updates, strategy)
-            console.print(f"[green]✓[/green] Інвентаризація вихідної сесії оновлена")
-
-            # Зберегти звіт в новій сесії
-            sort_report = []
-            sort_report.append("=" * 80)
-            sort_report.append(f"ЗВІТ СОРТУВАННЯ")
-            sort_report.append("=" * 80)
-            sort_report.append(f"\nВихідна сесія: {source_session.session_id}")
-            sort_report.append(f"Стратегія: {strategy}")
-            sort_report.append(f"Переміщено файлів: {len(file_updates)}\n")
-            for old, new in file_updates.items():
-                sort_report.append(f"{old}")
-                sort_report.append(f"  → {new}\n")
-
-            (sort_session.session_dir / "sort_report.txt").write_text(
-                "\n".join(sort_report), encoding="utf-8"
-            )
-            console.print(f"[green]✓[/green] Звіт збережено: {sort_session.session_dir / 'sort_report.txt'}")
+            update_inventory_after_sort(latest_run, file_updates, strategy)
+            console.print(format_status(f"Інвентаризація оновлена: {latest_run / 'inventory.xlsx'}", is_error=False))
 
     except Exception as e:
-        console.print(f"\n[red]Помилка виконання: {e}[/red]")
+        console.print(format_error(f"\nПомилка виконання: {e}"))
         import traceback
-        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        console.print(markup(THEME.dim_text, traceback.format_exc()))
 
 
 def execute_pipeline(
@@ -478,22 +437,37 @@ def execute_pipeline(
         setup_logging(session.session_dir)
         save_config(cfg, session.session_dir)
     except Exception as exc:
-        console.print(f"[red]Помилка ініціалізації: {exc}[/red]")
+        console.print(format_error(f"Помилка ініціалізації: {exc}"))
         return
 
-    # Ініціалізація живого TUI
-    tui = LiveTUI(console)
+    tracker = ProgressTracker(
+        {
+            "scan": 1.0,
+            "dedup": 1.0,
+            "extract": 2.0,
+            "classify": 1.0,
+            "rename": 1.0,
+            "inventory": 1.0,
+        }
+    )
+
+    # Запустити візуальний прогрес-бар
+    mode_text = "швидкого аналізу" if mode == "dry-run" else "застосування змін"
+    console.print(f"\n{markup(THEME.success, f'Запуск {mode_text}...')}")
+    tracker.start_visual()
 
     try:
         root = cfg.root_path
 
         # Validate root path exists
         if not root.exists():
-            console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
+            tracker.stop_visual()
+            console.print(format_error(f"Помилка: Шлях {root} не існує"))
             return
 
         if not root.is_dir():
-            console.print(f"[red]Помилка: {root} не є директорією[/red]")
+            tracker.stop_visual()
+            console.print(format_error(f"Помилка: {root} не є директорією"))
             return
 
         console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
@@ -517,21 +491,23 @@ def execute_pipeline(
                     session_dir=session.session_dir,
                 )
                 console.print(
-                    f"[green]✓[/green] LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})"
+                    format_status(f"LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})", is_error=False)
                 )
             else:
                 console.print(
-                    f"[yellow]⚠[/yellow] LLM увімкнено але API ключ не налаштовано"
+                    markup(THEME.warning, "⚠ LLM увімкнено але API ключ не налаштовано")
                 )
 
         try:
             metas = scan_directory(root)
         except Exception as exc:
-            console.print(f"[red]Помилка сканування: {exc}[/red]")
+            tracker.stop_visual()
+            console.print(format_error(f"Помилка сканування: {exc}"))
             return
 
         if not metas:
-            console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
+            tracker.stop_visual()
+            console.print(markup(THEME.warning, "Попередження: Не знайдено файлів для обробки"))
             return
 
         # Запустити LiveTUI після сканування
@@ -542,17 +518,32 @@ def execute_pipeline(
         tui.update_stage("Пошук дублікатів")
         exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
 
-        # Оновити статистику дублікатів
-        for group in exact_groups:
-            tui.add_duplicate_group(files_count=len(group.files) - 1)  # -1 бо один canonical
+        # Підрахунок файлів-дублікатів
+        duplicate_files_count = sum(len(group.files) - 1 for group in exact_groups)
+
+        # Оновити метрики дублікатів
+        tracker.update_metrics(
+            duplicate_groups=len(exact_groups),
+            duplicate_files=duplicate_files_count
+        )
+
+        tracker.increment("dedup", len(metas))
+        tracker.update_description("dedup", f"Знайдено {len(exact_groups)} груп дублікатів")
+        update_progress(run_dir, tracker)
 
         file_contexts: Dict[Path, FileContext] = {}
-        tui.update_stage("Вилучення тексту та класифікація")
-
+        tracker.set_stage_total("extract", len(metas))
+        error_count = 0
         for idx, meta in enumerate(metas, 1):
-            # Почати обробку файлу
-            tui.start_file(meta.path.name)
+            # Встановити поточний файл
+            tracker.set_current_file(
+                name=meta.path.name,
+                path=str(meta.path),
+                stage="витяг тексту",
+                status="processing",
+            )
 
+            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
             try:
                 # Хеш файлу
                 ensure_hash(meta)
@@ -607,9 +598,27 @@ def execute_pipeline(
                     category=category,
                     date_doc=date_doc,
                 )
+
+                # Успішно оброблено
+                tracker.set_current_file(
+                    name=meta.path.name,
+                    category=category,
+                    stage="витяг тексту",
+                    status="success",
+                )
             except Exception as exc:
                 # Use fallback values if extraction fails
-                tui.update_llm(error=True)
+                error_count += 1
+                error_msg = f"Не вдалося обробити: {exc}"
+                console.print(markup(THEME.warning, f"⚠ {error_msg}"))
+
+                tracker.set_current_file(
+                    name=meta.path.name,
+                    stage="витяг тексту",
+                    status="error",
+                    error_msg=str(exc),
+                )
+
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=ExtractionResult(text="", source="error", quality=0.0),
@@ -618,6 +627,16 @@ def execute_pipeline(
                     category="інше",
                     date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
                 )
+
+                tracker.update_metrics(error_count=error_count)
+
+            tracker.increment("extract")
+
+            # Показати статус кожні 10 файлів
+            if idx % 10 == 0:
+                tracker.show_status()
+
+        update_progress(run_dir, tracker)
 
             # Завершити обробку файлу
             tui.finish_file()
@@ -668,19 +687,20 @@ def execute_pipeline(
         # Попередній перегляд перейменування (тільки для commit режиму)
         if mode == "commit" and rename_plans:
             tracker.stop_visual()
-            console.print("\n[bold cyan]Планування перейменування завершено![/bold cyan]")
+            console.print(f"\n{markup(THEME.success, 'Планування перейменування завершено!')}")
 
             # Показати попередній перегляд і запитати підтвердження
             confirmed = show_rename_preview(rename_plans)
 
             if not confirmed:
-                console.print("\n[yellow]✗ Перейменування скасовано користувачем[/yellow]")
-                console.print("[dim]Інвентаризація буде збережена без застосування перейменування[/dim]\n")
+                console.print(markup(THEME.warning, "\n✗ Перейменування скасовано користувачем"))
+                console.print(markup(THEME.dim_text, "Інвентаризація буде збережена без застосування перейменування\n"))
                 # Встановити режим на dry-run щоб не застосовувати зміни
                 mode = "dry-run"
 
             # Відновити візуальний прогрес
-            console.print(f"\n[bold green]Продовження {'застосування змін' if mode == 'commit' else 'без змін'}...[/bold green]")
+            continue_text = "застосування змін" if mode == "commit" else "без змін"
+            console.print(f"\n{markup(THEME.success, f'Продовження {continue_text}...')}")
             tracker.start_visual()
 
         rows: List[InventoryRow] = []
@@ -691,6 +711,20 @@ def execute_pipeline(
         renamed_ok = 0
         renamed_failed = 0
         for idx, plan in enumerate(rename_plans, 1):
+            # Отримати контекст файлу для категорії
+            ctx = file_contexts.get(plan.meta.path)
+            category = ctx.category if ctx else "інше"
+
+            # Встановити поточний файл
+            tracker.set_current_file(
+                name=plan.meta.path.name,
+                path=str(plan.meta.path),
+                category=category,
+                stage="перейменування",
+                status="processing",
+            )
+
+            tracker.update_description("rename", f"{plan.meta.path.name} → {plan.new_name} ({idx}/{len(rename_plans)})")
             target = plan.meta.path.with_name(plan.new_name)
             status = "skipped" if mode == "dry-run" else "success"
             error = ""
@@ -698,11 +732,37 @@ def execute_pipeline(
                 try:
                     plan.meta.path.rename(target)
                     renamed_ok += 1
+                    # Успішно перейменовано
+                    tracker.set_current_file(
+                        name=plan.new_name,
+                        category=category,
+                        stage="перейменування",
+                        status="success",
+                    )
                 except Exception as exc:
                     status = "failed"
                     error = str(exc)
                     renamed_failed += 1
                     target = plan.meta.path
+                    # Помилка перейменування
+                    tracker.set_current_file(
+                        name=plan.meta.path.name,
+                        category=category,
+                        stage="перейменування",
+                        status="error",
+                        error_msg=str(exc),
+                    )
+            tracker.increment("rename")
+
+            # Оновити метрики успішності
+            tracker.update_metrics(
+                success_count=renamed_ok,
+                error_count=renamed_failed
+            )
+
+            # Показати статус кожні 10 файлів
+            if idx % 10 == 0:
+                tracker.show_status()
             meta_path = plan.meta.path
             ctx = file_contexts[meta_path]
             dup_info = duplicates_map.get(
@@ -895,39 +955,41 @@ def execute_pipeline(
         )
 
         try:
-            write_inventory(rows, summary, session.session_dir)
-
-            # Зберегти повний лог LLM запитів/відповідей
-            if llm_client and llm_client.request_log:
-                llm_log_path = llm_client.save_log_to_file(session.session_dir)
-                if llm_log_path:
-                    console.print(f"[dim]LLM лог збережено: {llm_log_path.name}[/dim]")
-
-            # Створити додаткові звіти
-            _create_session_reports(session, metas, exact_groups, rename_plans, llm_client, summary)
-
-            # Зупинити TUI та показати фінальну статистику
-            tui.show_final_stats()
-
-            console.print(f"[green]✓[/green] Інвентаризація збережена: {session.session_dir / 'inventory.xlsx'}")
-            console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
-            console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
+            write_inventory(rows, summary, run_dir)
+            update_progress(run_dir, tracker)
+            tracker.stop_visual()
+            console.print(format_status(f"\nЗавершено. Дані у {run_dir}", is_error=False))
+            console.print(f"{markup(THEME.header, 'Оброблено файлів:')} {format_number(summary.files_processed)}")
+            console.print(f"{markup(THEME.header, 'Перейменовано:')} {format_number(summary.renamed_ok)}")
             if summary.duplicate_files > 0:
-                console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
-            console.print(f"\n[dim]Додаткові звіти збережено в {session.session_dir}[/dim]")
+                console.print(f"{markup(THEME.duplicate, 'Дублікатів:')} {format_number(summary.duplicate_files, THEME.duplicate_count)}")
+
+            # Статистика LLM
+            if llm_client:
+                stats = llm_client.get_stats()
+                if stats["requests"] > 0:
+                    # Оновити метрики LLM
+                    tracker.update_metrics(
+                        llm_requests=stats["requests"],
+                        llm_responses=stats["requests"]  # Кількість відповідей = кількості запитів
+                    )
+                    console.print(
+                        f"{markup(THEME.llm_request, '🤖 LLM запитів:')} {format_number(stats['requests'])}, "
+                        f"{markup(THEME.llm_request, 'токенів:')} {format_number(stats['tokens'])}"
+                    )
         except Exception as exc:
-            tui.stop()
-            console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")
+            tracker.stop_visual()
+            console.print(format_error(f"\nПомилка запису інвентаризації: {exc}"))
             return
 
     except Exception as exc:
-        # Глобальна обробка помилок - зупиняємо TUI
-        tui.stop()
-        console.print(f"\n[red]═══ Помилка виконання ═══[/red]")
-        console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+        # Глобальна обробка помилок - зупиняємо прогрес-бар
+        tracker.stop_visual()
+        console.print(f"\n{markup(THEME.error, '═══ Помилка виконання ═══')}")
+        console.print(format_error(f"{type(exc).__name__}: {exc}"))
         import traceback
-        console.print(f"\n[dim]Детальна інформація:[/dim]")
-        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        console.print(f"\n{markup(THEME.dim_text, 'Детальна інформація:')}")
+        console.print(markup(THEME.dim_text, traceback.format_exc()))
         raise  # Передаємо помилку вище
 
 
