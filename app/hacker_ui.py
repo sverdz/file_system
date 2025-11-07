@@ -75,10 +75,20 @@ def render_ascii_logo(scan_dir: str) -> Text:
 
 
 def render_progress_bar(percentage: float, width: int = 20) -> str:
-    """Створити прогрес-бар заданої ширини."""
-    filled = int(width * percentage / 100)
+    """Створити тонкий прогрес-бар заданої ширини з дужками."""
+    percentage = max(0.0, min(100.0, percentage))
+    filled = int(round(width * percentage / 100))
+    filled = min(width, max(0, filled))
     empty = width - filled
-    return f"[{THEME.progress_bar}]{'█' * filled}[/][dim white]{'░' * empty}[/]"
+    left_bracket = f"[dim white][[/dim white]"
+    right_bracket = f"[dim white]][/dim white]"
+    filled_block = ""
+    if filled:
+        filled_block = f"[{THEME.progress_bar}]{'█' * filled}[/{THEME.progress_bar}]"
+    empty_block = ""
+    if empty:
+        empty_block = f"[{THEME.bar_incomplete}]{'░' * empty}[/{THEME.bar_incomplete}]"
+    return f"{left_bracket}{filled_block}{empty_block}{right_bracket}"
 
 
 def render_file_log_entry(entry, show_details: bool = True) -> List[str]:
