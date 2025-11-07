@@ -38,11 +38,16 @@ class ColorTheme:
     progress_bar: str = "bright_green"    # Заповнення прогрес-бару
     progress_text: str = "bright_white"   # Текст прогресу
     progress_percent: str = "bright_yellow" # Відсоток виконання
+    bar_complete: str = "bright_green"    # Заповнена частина компактного прогрес-бару
+    bar_incomplete: str = "grey54"        # Порожня частина компактного прогрес-бару
 
     # Заголовки та рамки
     header: str = "bright_yellow"         # Заголовки секцій
     border: str = "yellow"                # Рамки та розділювачі
     title: str = "bold bright_white"      # Головні заголовки
+    border_soft: str = "bright_black"     # Пом'якшена рамка для допоміжних панелей
+    logo: str = "bright_yellow"           # Стиль ASCII-логотипу
+    label: str = "bright_cyan"            # Підписи в таблицях
 
     # Категорії файлів
     category: str = "bright_magenta"      # Назва категорії
