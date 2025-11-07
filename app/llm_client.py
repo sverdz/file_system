@@ -24,7 +24,10 @@ class LLMClient:
         self.model = model
         self.enabled = enabled
         self.request_count = 0
+        self.response_count = 0
         self.total_tokens = 0
+        self.tokens_sent = 0
+        self.tokens_received = 0
 
     def analyze_document(
         self, text: str, max_length: int = 2000
@@ -54,16 +57,10 @@ class LLMClient:
 Відповідай тільки валідним JSON без додаткового тексту."""
 
         try:
-            console.print(
-                f"\n[dim]🤖 LLM запит ({self.provider}):[/dim]",
-                style="dim",
-            )
-            console.print(f"[dim]   Текст: {len(text_sample)} символів[/dim]")
-
             response_text = self._make_request(prompt)
 
             if response_text:
-                console.print(f"[dim]✓ LLM відповідь отримано ({len(response_text)} символів)[/dim]")
+                self.response_count += 1
 
                 # Парсимо JSON
                 try:
@@ -80,22 +77,18 @@ class LLMClient:
                     date = data.get("date")
                     summary = data.get("summary")
 
-                    console.print(
-                        f"[dim]   Категорія: {category}, Дата: {date}[/dim]"
-                    )
-                    console.print(f"[dim]   Опис: {summary[:50]}...[/dim]")
-
                     return category, date, summary
                 except json.JSONDecodeError as e:
+                    # Тільки при помилці виводимо в консоль
                     console.print(
-                        f"[yellow]⚠ Помилка парсингу JSON: {e}[/yellow]"
+                        f"[yellow]⚠ Помилка парсингу JSON від LLM: {e}[/yellow]"
                     )
-                    console.print(f"[dim]Відповідь: {response_text[:200]}[/dim]")
                     return None, None, None
             else:
                 return None, None, None
 
         except Exception as e:
+            # Тільки при помилці виводимо в консоль
             console.print(f"[yellow]⚠ Помилка LLM запиту: {e}[/yellow]")
             return None, None, None
 
@@ -139,8 +132,11 @@ class LLMClient:
             result = response.json()
             # Оновлюємо статистику
             if "usage" in result:
-                self.total_tokens += result["usage"].get("input_tokens", 0)
-                self.total_tokens += result["usage"].get("output_tokens", 0)
+                input_tokens = result["usage"].get("input_tokens", 0)
+                output_tokens = result["usage"].get("output_tokens", 0)
+                self.tokens_sent += input_tokens
+                self.tokens_received += output_tokens
+                self.total_tokens += input_tokens + output_tokens
 
             content = result.get("content", [])
             if content and len(content) > 0:
@@ -177,6 +173,10 @@ class LLMClient:
             result = response.json()
             # Оновлюємо статистику
             if "usage" in result:
+                prompt_tokens = result["usage"].get("prompt_tokens", 0)
+                completion_tokens = result["usage"].get("completion_tokens", 0)
+                self.tokens_sent += prompt_tokens
+                self.tokens_received += completion_tokens
                 self.total_tokens += result["usage"].get("total_tokens", 0)
 
             choices = result.get("choices", [])
@@ -193,7 +193,10 @@ class LLMClient:
         """Отримати статистику використання."""
         return {
             "requests": self.request_count,
+            "responses": self.response_count,
             "tokens": self.total_tokens,
+            "tokens_sent": self.tokens_sent,
+            "tokens_received": self.tokens_received,
         }
 
 

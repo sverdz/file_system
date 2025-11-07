@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.config import Config, load_config, save_config, test_llm_connection
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
 from app.inventory import InventoryRow, RunSummary, write_inventory, find_latest_run, read_inventory, update_inventory_after_sort
+from app.live_tui import LiveTUI
 from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
@@ -336,34 +338,23 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         console.print(f"[red]Помилка ініціалізації: {exc}[/red]")
         return
 
-    tracker = ProgressTracker(
-        {
-            "scan": 1.0,
-            "dedup": 1.0,
-            "extract": 2.0,
-            "classify": 1.0,
-            "rename": 1.0,
-            "inventory": 1.0,
-        }
-    )
-
-    # Запустити візуальний прогрес-бар
-    console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
-    tracker.start_visual()
+    # Ініціалізація живого TUI
+    tui = LiveTUI(console)
 
     try:
         root = cfg.root_path
 
         # Validate root path exists
         if not root.exists():
-            tracker.stop_visual()
             console.print(f"[red]Помилка: Шлях {root} не існує[/red]")
             return
 
         if not root.is_dir():
-            tracker.stop_visual()
             console.print(f"[red]Помилка: {root} не є директорією[/red]")
             return
+
+        console.print(f"\n[bold green]Запуск {'швидкого аналізу' if mode == 'dry-run' else 'застосування змін'}...[/bold green]")
+        console.print(f"[cyan]Швидке сканування директорії...[/cyan]\n")
 
         # Створити LLM клієнт якщо увімкнено
         llm_client = None
@@ -392,41 +383,74 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         try:
             metas = scan_directory(root)
         except Exception as exc:
-            tracker.stop_visual()
             console.print(f"[red]Помилка сканування: {exc}[/red]")
             return
 
         if not metas:
-            tracker.stop_visual()
             console.print("[yellow]Попередження: Не знайдено файлів для обробки[/yellow]")
             return
 
-        # Після сканування встановлюємо total для всіх етапів
-        tracker.set_all_totals(len(metas))
-        tracker.set_stage_total("scan", len(metas))
-        tracker.increment("scan", len(metas))
-        tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
-        update_progress(run_dir, tracker)
+        # Запустити LiveTUI після сканування
+        console.print(f"[green]✓[/green] Знайдено {len(metas)} файлів")
+        time.sleep(1)  # Пауза щоб побачити результат сканування
+        tui.start(total_files=len(metas))
 
-        tracker.update_description("dedup", "Аналіз дублікатів...")
+        tui.update_stage("Пошук дублікатів")
         exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
-        tracker.increment("dedup", len(metas))
-        tracker.update_description("dedup", f"Знайдено {len(exact_groups)} груп дублікатів")
-        update_progress(run_dir, tracker)
+
+        # Оновити статистику дублікатів
+        for group in exact_groups:
+            tui.add_duplicate_group(files_count=len(group.files) - 1)  # -1 бо один canonical
 
         file_contexts: Dict[Path, FileContext] = {}
-        tracker.set_stage_total("extract", len(metas))
+        tui.update_stage("Вилучення тексту та класифікація")
+
         for idx, meta in enumerate(metas, 1):
-            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
+            # Почати обробку файлу
+            tui.start_file(meta.path.name)
+
             try:
+                # Хеш файлу
                 ensure_hash(meta)
+
+                # Перевірка дублікатів для цього файлу
+                is_duplicate = any(meta.path in [f.path for f in group.files] for group in exact_groups)
+                if is_duplicate:
+                    tui.update_duplicates("Так, знайдено дублікати")
+                else:
+                    tui.update_duplicates("Немає")
+
+                # Вилучення тексту
                 result = extract_text(meta, cfg.ocr_lang)
-                # Використовуємо LLM для класифікації якщо доступний
-                classification = classify_text(result.text, llm_client=llm_client)
+
+                # Класифікація (можливо з LLM)
+                if llm_client and llm_client.enabled and result.text.strip():
+                    tui.update_llm(requests=1)  # Запит до LLM
+
+                    # Зберігаємо попередні значення токенів
+                    stats_before = llm_client.get_stats()
+                    prev_sent = stats_before["tokens_sent"]
+                    prev_recv = stats_before["tokens_received"]
+
+                    classification = classify_text(result.text, llm_client=llm_client)
+
+                    # Обчислюємо різницю токенів
+                    stats_after = llm_client.get_stats()
+                    new_sent = stats_after["tokens_sent"] - prev_sent
+                    new_recv = stats_after["tokens_received"] - prev_recv
+
+                    if new_sent > 0 or new_recv > 0:
+                        tui.update_llm(responses=1)
+                        tui.update_llm_tokens(sent=new_sent, received=new_recv)
+                else:
+                    classification = classify_text(result.text)
+
                 category = classification.get("category") or "інше"
+                tui.update_classification(category)
+
                 date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
-                # Якщо LLM повернув summary, використовуємо його
                 summary = classification.get("summary") or summarize_text(result.text, llm_client=llm_client)
+
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=result,
@@ -437,7 +461,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 )
             except Exception as exc:
                 # Use fallback values if extraction fails
-                console.print(f"[yellow]Попередження: Не вдалося обробити {meta.path.name}: {exc}[/yellow]")
+                tui.update_llm(error=True)
                 file_contexts[meta.path] = FileContext(
                     meta=meta,
                     text=ExtractionResult(text="", source="error", quality=0.0),
@@ -446,13 +470,9 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                     category="інше",
                     date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
                 )
-            tracker.increment("extract")
-        update_progress(run_dir, tracker)
 
-        tracker.set_stage_total("classify", len(metas))
-        tracker.increment("classify", len(metas))
-        tracker.update_description("classify", "Класифікацію завершено")
-        update_progress(run_dir, tracker)
+            # Завершити обробку файлу
+            tui.finish_file()
 
         duplicates_map: Dict[Path, Dict[str, Optional[str]]] = {}
         duplicates_files_map: Dict[str, List[Path]] = {}
@@ -493,11 +513,10 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         row_map: Dict[Path, InventoryRow] = {}
         path_to_row: Dict[Path, InventoryRow] = {}
 
-        tracker.set_stage_total("rename", len(rename_plans))
+        tui.update_stage("Перейменування файлів" if mode == "commit" else "Планування перейменування")
         renamed_ok = 0
         renamed_failed = 0
         for idx, plan in enumerate(rename_plans, 1):
-            tracker.update_description("rename", f"{plan.meta.path.name} → {plan.new_name} ({idx}/{len(rename_plans)})")
             target = plan.meta.path.with_name(plan.new_name)
             status = "skipped" if mode == "dry-run" else "success"
             error = ""
@@ -510,7 +529,6 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                     error = str(exc)
                     renamed_failed += 1
                     target = plan.meta.path
-            tracker.increment("rename")
             meta_path = plan.meta.path
             ctx = file_contexts[meta_path]
             dup_info = duplicates_map.get(
@@ -564,7 +582,6 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             rows.append(row)
             row_map[meta_path] = row
             path_to_row[Path(row.path_new)] = row
-        update_progress(run_dir, tracker)
 
         for meta in metas:
             if meta.path in row_map:
@@ -677,7 +694,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 row.path_final = str(new_path)
                 path_to_row[Path(new_path)] = row
 
-        tracker.increment("inventory")
+        tui.update_stage("Створення інвентаризації")
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         summary = RunSummary(
             run_id=run_id,
@@ -705,30 +722,23 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
         try:
             write_inventory(rows, summary, run_dir)
-            update_progress(run_dir, tracker)
-            tracker.stop_visual()
-            console.print(f"\n[green]✓[/green] Завершено. Дані у {run_dir}")
+
+            # Зупинити TUI та показати фінальну статистику
+            tui.show_final_stats()
+
+            console.print(f"[green]✓[/green] Інвентаризація збережена: {run_dir / 'inventory.xlsx'}")
             console.print(f"[cyan]Оброблено файлів:[/cyan] {summary.files_processed}")
             console.print(f"[cyan]Перейменовано:[/cyan] {summary.renamed_ok}")
             if summary.duplicate_files > 0:
                 console.print(f"[yellow]Дублікатів:[/yellow] {summary.duplicate_files}")
-
-            # Статистика LLM
-            if llm_client:
-                stats = llm_client.get_stats()
-                if stats["requests"] > 0:
-                    console.print(
-                        f"[magenta]🤖 LLM запитів:[/magenta] {stats['requests']}, "
-                        f"[magenta]токенів:[/magenta] {stats['tokens']}"
-                    )
         except Exception as exc:
-            tracker.stop_visual()
+            tui.stop()
             console.print(f"\n[red]Помилка запису інвентаризації: {exc}[/red]")
             return
 
     except Exception as exc:
-        # Глобальна обробка помилок - зупиняємо прогрес-бар
-        tracker.stop_visual()
+        # Глобальна обробка помилок - зупиняємо TUI
+        tui.stop()
         console.print(f"\n[red]═══ Помилка виконання ═══[/red]")
         console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
         import traceback
