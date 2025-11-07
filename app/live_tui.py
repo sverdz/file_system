@@ -278,19 +278,23 @@ def _format_timestamp(seconds: float) -> str:
 
 
 def _build_stage_bar(percent: float) -> str:
+    """Побудувати компактний прогрес-бар у дужках для етапів."""
     percent = max(0.0, min(100.0, percent))
     width = 4
     filled = int(round(width * percent / 100.0))
     filled = min(width, max(0, filled))
     empty = width - filled
-    return (
-        f"[{THEME.bar_complete}]" + "█" * filled + f"[/{THEME.bar_complete}]"
-        + f"[{THEME.bar_incomplete}]" + "░" * empty + f"[/{THEME.bar_incomplete}]"
-    )
+    parts = ["[dim white][[/dim white]"]
+    if filled:
+        parts.append(f"[{THEME.bar_complete}]{'█' * filled}[/{THEME.bar_complete}]")
+    if empty:
+        parts.append(f"[{THEME.bar_incomplete}]{'░' * empty}[/{THEME.bar_incomplete}]")
+    parts.append("[dim white]][/dim white]")
+    return "".join(parts)
 
 
 def _build_detailed_bar(percent: float, width: int = 20) -> Text:
-    """Детальний прогрес-бар для логів."""
+    """Детальний прогрес-бар для логів з тонкими блоками."""
     percent = max(0.0, min(100.0, percent))
     filled = int(round(width * percent / 100.0))
     filled = min(width, max(0, filled))
@@ -298,8 +302,10 @@ def _build_detailed_bar(percent: float, width: int = 20) -> Text:
 
     bar = Text()
     bar.append("[", style=THEME.dim_text)
-    bar.append("█" * filled, style=THEME.bar_complete)
-    bar.append("░" * empty, style=THEME.bar_incomplete)
+    if filled:
+        bar.append("█" * filled, style=THEME.bar_complete)
+    if empty:
+        bar.append("░" * empty, style=THEME.bar_incomplete)
     bar.append("]", style=THEME.dim_text)
     return bar
 
@@ -573,15 +579,19 @@ class LiveTUI:
             self._refresh()
 
     def _mini_bar(self, percent: float, width: int = 22) -> str:
-        """Компактний однорядковий прогрес-бар."""
+        """Компактний прогрес-бар у дужках для шапки та секцій."""
 
         percent = max(0.0, min(100.0, percent))
-        filled = int(width * (percent / 100.0))
+        filled = int(round(width * (percent / 100.0)))
+        filled = min(width, max(0, filled))
         empty = width - filled
-        return (
-            f"[{THEME.bar_complete}]" + "█" * filled + f"[/{THEME.bar_complete}]"
-            + f"[{THEME.bar_incomplete}]" + "░" * empty + f"[/{THEME.bar_incomplete}]"
-        )
+        parts = ["[dim white][[/dim white]"]
+        if filled:
+            parts.append(f"[{THEME.bar_complete}]{'█' * filled}[/{THEME.bar_complete}]")
+        if empty:
+            parts.append(f"[{THEME.bar_incomplete}]{'░' * empty}[/{THEME.bar_incomplete}]")
+        parts.append("[dim white]][/dim white]")
+        return "".join(parts)
 
     def _refresh(self) -> None:
         if self.live and self._running:
