@@ -46,6 +46,79 @@ class FileContext:
     date_doc: str
 
 
+def show_rename_preview(rename_plans: list, max_preview: int = 50) -> bool:
+    """
+    Показати попередній перегляд перейменування файлів у вигляді таблиці.
+
+    Args:
+        rename_plans: Список RenamePlan з планами перейменування
+        max_preview: Максимальна кількість файлів для відображення (за замовчуванням 50)
+
+    Returns:
+        True якщо користувач підтвердив, False якщо скасував
+    """
+    console.print("\n[bold cyan]╔═══════════════════════════════════════════════════════════════╗[/bold cyan]")
+    console.print("[bold cyan]║       ПОПЕРЕДНІЙ ПЕРЕГЛЯД ПЕРЕЙМЕНУВАННЯ ФАЙЛІВ              ║[/bold cyan]")
+    console.print("[bold cyan]╚═══════════════════════════════════════════════════════════════╝[/bold cyan]\n")
+
+    # Створити таблицю
+    table = Table(show_header=True, header_style="bold magenta", show_lines=True)
+    table.add_column("№", style="dim", width=5)
+    table.add_column("Старе ім'я", style="cyan", max_width=40)
+    table.add_column("→", justify="center", width=3)
+    table.add_column("Нове ім'я", style="green", max_width=40)
+    table.add_column("Довжина", justify="right", width=8)
+    table.add_column("Колізія", justify="center", width=8)
+
+    total_files = len(rename_plans)
+    preview_count = min(max_preview, total_files)
+
+    # Додати рядки до таблиці
+    for idx, plan in enumerate(rename_plans[:preview_count], 1):
+        old_name = plan.meta.path.name
+        new_name = plan.new_name
+        # Довжина без розширення
+        name_without_ext = Path(new_name).stem
+        length = len(name_without_ext)
+        collision_mark = "[yellow]✓[/yellow]" if plan.collision else ""
+
+        # Підсвітка якщо довжина більше 20
+        length_str = f"[red]{length}[/red]" if length > 20 else f"[green]{length}[/green]"
+
+        table.add_row(
+            str(idx),
+            old_name,
+            "→",
+            new_name,
+            length_str,
+            collision_mark
+        )
+
+    console.print(table)
+
+    # Якщо файлів більше ніж max_preview
+    if total_files > preview_count:
+        console.print(f"\n[dim]... і ще {total_files - preview_count} файлів[/dim]")
+
+    # Статистика
+    console.print(f"\n[bold]Підсумок:[/bold]")
+    console.print(f"  • Всього файлів для перейменування: [cyan]{total_files}[/cyan]")
+    collisions = sum(1 for p in rename_plans if p.collision)
+    if collisions > 0:
+        console.print(f"  • Файлів з колізіями (додано суфікс): [yellow]{collisions}[/yellow]")
+
+    # Перевірка довжин
+    too_long = sum(1 for p in rename_plans if len(Path(p.new_name).stem) > 20)
+    if too_long > 0:
+        console.print(f"  • [red]⚠ УВАГА: {too_long} файлів перевищують ліміт 20 символів![/red]")
+
+    # Запит підтвердження
+    console.print("\n[bold yellow]Застосувати перейменування?[/bold yellow]")
+    response = input("Введіть 'y' або 'yes' для підтвердження, будь-що інше для скасування: ").strip().lower()
+
+    return response in ('y', 'yes', 'так', 'т')
+
+
 def main() -> None:
     try:
         cfg = load_config()
@@ -573,16 +646,42 @@ def execute_pipeline(
         contexts_for_rename: Dict[Path, Dict[str, str]] = {}
         for meta in rename_candidates:
             ctx = file_contexts[meta.path]
-            # Обмежуємо категорію до 15 символів щоб вмістити дату (10 символів) + розділювач
-            category_short = ctx.category[:15] if ctx.category else "інше"
+            # Передаємо повну категорію та дату для нового формату
             contexts_for_rename[meta.path] = {
-                "category": category_short,
-                "yyyy": ctx.date_doc[:4],
-                "mm": ctx.date_doc[5:7],
-                "dd": ctx.date_doc[8:10],
+                "category": ctx.category,
+                "date_doc": ctx.date_doc,
+                "yyyy": ctx.date_doc[:4] if len(ctx.date_doc) >= 4 else "2024",
+                "mm": ctx.date_doc[5:7] if len(ctx.date_doc) >= 7 else "01",
+                "dd": ctx.date_doc[8:10] if len(ctx.date_doc) >= 10 else "01",
                 "ext": meta.path.suffix,
             }
-        rename_plans = plan_renames(rename_candidates, cfg.rename_template, contexts_for_rename)
+
+        # Використання нових параметрів для короткого формату
+        rename_plans = plan_renames(
+            rename_candidates,
+            cfg.rename_template,
+            contexts_for_rename,
+            use_short_format=cfg.use_short_format,
+            use_short_date=cfg.use_short_date
+        )
+
+        # Попередній перегляд перейменування (тільки для commit режиму)
+        if mode == "commit" and rename_plans:
+            tracker.stop_visual()
+            console.print("\n[bold cyan]Планування перейменування завершено![/bold cyan]")
+
+            # Показати попередній перегляд і запитати підтвердження
+            confirmed = show_rename_preview(rename_plans)
+
+            if not confirmed:
+                console.print("\n[yellow]✗ Перейменування скасовано користувачем[/yellow]")
+                console.print("[dim]Інвентаризація буде збережена без застосування перейменування[/dim]\n")
+                # Встановити режим на dry-run щоб не застосовувати зміни
+                mode = "dry-run"
+
+            # Відновити візуальний прогрес
+            console.print(f"\n[bold green]Продовження {'застосування змін' if mode == 'commit' else 'без змін'}...[/bold green]")
+            tracker.start_visual()
 
         rows: List[InventoryRow] = []
         row_map: Dict[Path, InventoryRow] = {}
