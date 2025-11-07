@@ -1,10 +1,11 @@
 """Inventory export utilities for Excel workbooks."""
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Set
 
 import pandas as pd
 
@@ -80,6 +81,73 @@ class RunSummary:
     excel_updated: bool
 
 
+# Заборонені символи в назвах аркушів Excel: : \ / ? * [ ]
+INVALID_SHEET_CHARS = re.compile(r'[\[\]:*?/\\]')
+MAX_SHEET_NAME_LENGTH = 31
+
+
+def normalize_sheet_name(name: str, used_names: Set[str] | None = None, fallback: str = "Sheet") -> str:
+    """
+    Нормалізація назви аркуша Excel для уникнення помилок.
+
+    Excel обмеження:
+    - Максимум 31 символ
+    - Заборонені символи: : \ / ? * [ ]
+    - Не може бути порожнім
+    - Не може починатися/закінчуватися пробілами
+
+    Args:
+        name: Вхідна назва аркуша
+        used_names: Множина вже використаних назв (для уникнення конфліктів)
+        fallback: Назва за замовчуванням якщо після очищення порожня
+
+    Returns:
+        Нормалізована назва аркуша
+    """
+    if not name or not name.strip():
+        name = fallback
+
+    # Видалити керуючі та невидимі символи
+    cleaned = ''.join(char for char in name if char.isprintable() or char in ' \t')
+
+    # Замінити заборонені символи на підкреслення
+    cleaned = INVALID_SHEET_CHARS.sub('_', cleaned)
+
+    # Видалити повторювані підкреслення
+    cleaned = re.sub(r'_+', '_', cleaned)
+
+    # Прибрати пробіли на початку та в кінці
+    cleaned = cleaned.strip()
+
+    # Обрізати до максимальної довжини
+    if len(cleaned) > MAX_SHEET_NAME_LENGTH:
+        cleaned = cleaned[:MAX_SHEET_NAME_LENGTH]
+
+    # Якщо після очищення порожня - використати fallback
+    if not cleaned:
+        cleaned = fallback
+
+    # Обробка конфліктів назв
+    if used_names is not None:
+        original = cleaned
+        counter = 2
+        while cleaned in used_names:
+            # Додати суфікс _2, _3, тощо
+            suffix = f"_{counter}"
+            max_base_len = MAX_SHEET_NAME_LENGTH - len(suffix)
+            cleaned = original[:max_base_len] + suffix
+            counter += 1
+
+            # Безпека: максимум 1000 спроб
+            if counter > 1000:
+                cleaned = f"{fallback}_{counter}"
+                break
+
+        used_names.add(cleaned)
+
+    return cleaned
+
+
 def _dataframe(rows: Iterable[InventoryRow]) -> pd.DataFrame:
     df = pd.DataFrame([asdict(row) for row in rows])
     if df.empty:
@@ -101,12 +169,23 @@ def write_inventory(rows: Iterable[InventoryRow], summary: RunSummary, run_dir: 
     summary_df = pd.DataFrame([asdict(summary)])
     xlsx_path = run_dir / "inventory.xlsx"
 
+    # Трекінг використаних назв аркушів для уникнення конфліктів
+    used_names: Set[str] = set()
+
     # Створюємо тільки .xlsx файл (сучасний формат) з openpyxl
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="inventory", index=False)
-        for sheet, view_df in views.items():
-            view_df.to_excel(writer, sheet_name=sheet, index=False)
-        summary_df.to_excel(writer, sheet_name="run_summary", index=False)
+        # Основний аркуш
+        main_sheet = normalize_sheet_name("inventory", used_names, fallback="Inventory")
+        df.to_excel(writer, sheet_name=main_sheet, index=False)
+
+        # Аркуші з видами
+        for sheet_key, view_df in views.items():
+            sheet_name = normalize_sheet_name(sheet_key, used_names, fallback=f"View_{sheet_key}")
+            view_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        # Аркуш з підсумком
+        summary_sheet = normalize_sheet_name("run_summary", used_names, fallback="Summary")
+        summary_df.to_excel(writer, sheet_name=summary_sheet, index=False)
 
 
 def read_inventory(run_dir: Path) -> pd.DataFrame:
