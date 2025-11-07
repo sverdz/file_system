@@ -99,7 +99,149 @@ class DashboardMetrics:
 class LogEntry:
     """Запис в журналі обробки."""
 
-    lines: List[Text]
+    status: str  # "success", "warning", "error", "processing"
+    timestamp: str
+    hex_id: str
+    filename: str
+    size_bytes: int
+    modified_time: str
+    sha256: str
+    stages: Dict[str, float]  # stage_name -> percent
+    category: str
+    message: str
+    error_details: str = ""
+
+    def format_compact(self) -> List[Text]:
+        """Компактний формат (1-2 рядки)."""
+        icon = {
+            "success": "✅",
+            "warning": "⚠️",
+            "error": "❌",
+            "processing": "⚙️",
+        }.get(self.status, "•")
+
+        line1 = Text()
+        line1.append(f"[{icon}]", style=THEME.dim_text)
+        line1.append(f"[{self.timestamp}]", style=THEME.dim_text)
+        line1.append(f"[{self.hex_id}] ", style=THEME.dim_text)
+        line1.append(f"{self.filename}", style=THEME.file_name)
+
+        if self.size_bytes:
+            line1.append(f"  {format_file_size(self.size_bytes)}", style=THEME.dim_text)
+        if self.modified_time:
+            line1.append(f"  {self.modified_time}", style=THEME.dim_text)
+
+        if self.category:
+            line1.append(f"  → {self.category}", style=THEME.category)
+
+        if self.message:
+            line1.append(f"  {self.message}", style=THEME.dim_text)
+
+        return [line1]
+
+    def format_detailed(self) -> List[Text]:
+        """Детальний формат (багато рядків) як у прикладі."""
+        lines = []
+
+        # Заголовок файлу
+        icon = {
+            "success": "✅",
+            "warning": "⚠️",
+            "error": "❌",
+            "processing": "⚙️",
+        }.get(self.status, "•")
+
+        header = Text()
+        header.append(f"[{icon}]", style=THEME.dim_text)
+        header.append(f"[{self.timestamp}]", style=THEME.dim_text)
+        header.append(f"[{self.hex_id}] ", style=THEME.dim_text)
+        header.append(f"{self.filename}", style=THEME.file_name)
+
+        if self.status == "warning" and "DUP" in self.message.upper():
+            header.append(" [DUPLICATE!]", style=THEME.warning)
+        elif self.status == "error":
+            header.append(" [ERROR!]", style=THEME.error)
+
+        lines.append(header)
+
+        # Деталі файлу
+        details = Text("├─ ")
+        if self.size_bytes:
+            details.append(f"📏 {format_file_size(self.size_bytes)}  │  ", style=THEME.dim_text)
+        if self.modified_time:
+            details.append(f"📅 {self.modified_time}  │  ", style=THEME.dim_text)
+        if self.sha256:
+            details.append(f"🔒 SHA-256: {self.sha256[:6]}...", style=THEME.dim_text)
+        lines.append(details)
+
+        # Етапи обробки
+        if self.stages:
+            for stage_name, percent in self.stages.items():
+                stage_line = Text("├─ ")
+                stage_icon = {
+                    "scan": "🔍",
+                    "dedup": "🔍",
+                    "extract": "📝",
+                    "classify": "🤖",
+                    "rename": "✏️",
+                    "inventory": "📋",
+                }.get(stage_name, "•")
+
+                stage_label = stage_name.upper()
+                stage_line.append(f"{stage_icon} {stage_label:<10} ", style=THEME.label)
+                stage_line.append(_build_detailed_bar(percent, 20), style="")
+                stage_line.append(f" {int(percent)}%", style=THEME.dim_text)
+
+                # Додаткова інформація
+                if percent >= 100:
+                    stage_line.append("  [", style=THEME.dim_text)
+                    # Можна додати час обробки, якщо є
+                    stage_line.append("✓", style=THEME.number_success)
+                    stage_line.append("]", style=THEME.dim_text)
+
+                lines.append(stage_line)
+
+        # Повідомлення або результат
+        if self.message:
+            msg_line = Text("│    └─ ")
+            if self.status == "error":
+                msg_line.append(f"💬 \"{self.message}\"", style=THEME.error)
+            elif self.status == "warning":
+                msg_line.append(f"💬 \"{self.message}\"", style=THEME.warning)
+            else:
+                msg_line.append(f"💬 \"{self.message}\"", style=THEME.dim_text)
+            lines.append(msg_line)
+
+        # Результат категоризації
+        if self.category and self.status == "success":
+            result = Text("└─ ")
+            result.append("🏷️  CATEGORY: ", style=THEME.label)
+            result.append(f"{self.category}", style=THEME.category)
+            result.append(" → /sorted/...", style=THEME.dim_text)
+            lines.append(result)
+
+        # Деталі помилки
+        if self.error_details:
+            error_line = Text("└─ ")
+            error_line.append("⚠️  ERROR: ", style=THEME.error)
+            error_line.append(self.error_details, style=THEME.dim_text)
+            lines.append(error_line)
+
+        # Порожній рядок між записами
+        lines.append(Text(""))
+
+        return lines
+
+
+@dataclass
+class ErrorEntry:
+    """Запис про помилку."""
+
+    timestamp: str
+    filename: str
+    stage: str
+    error_message: str
+    traceback: str = ""
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -107,14 +249,14 @@ class LogEntry:
 # ════════════════════════════════════════════════════════════════════════
 
 
-def _render_ascii_logo(width: int) -> str:
+def _render_ascii_logo(width: int, run_id: str = "", root_path: str = "", terminal_info: str = "") -> str:
     """Повернути ASCII-логотип, адаптований до ширини."""
 
     banner = [
         " ███████╗██╗██╗     ███████╗    INVENTORY & CLASSIFICATION PIPELINE",
-        " ██╔════╝██║██║     ██╔════╝    RUN ID: --:--",
-        " █████╗  ██║██║     █████╗      ROOT: ./",
-        " ██╔══╝  ██║██║     ██╔══╝      TERMINAL: 120x40  MODE: RICH+EMOJI",
+        f" ██╔════╝██║██║     ██╔════╝    RUN ID: {run_id or '--:--'}",
+        f" █████╗  ██║██║     █████╗      ROOT: {root_path or './'}",
+        f" ██╔══╝  ██║██║     ██╔══╝      TERMINAL: {terminal_info or '120x40'}  MODE: RICH+EMOJI",
         " ██║     ██║███████╗███████╗    USER: OPERATOR",
     ]
 
@@ -147,6 +289,21 @@ def _build_stage_bar(percent: float) -> str:
     )
 
 
+def _build_detailed_bar(percent: float, width: int = 20) -> Text:
+    """Детальний прогрес-бар для логів."""
+    percent = max(0.0, min(100.0, percent))
+    filled = int(round(width * percent / 100.0))
+    filled = min(width, max(0, filled))
+    empty = width - filled
+
+    bar = Text()
+    bar.append("[", style=THEME.dim_text)
+    bar.append("█" * filled, style=THEME.bar_complete)
+    bar.append("░" * empty, style=THEME.bar_incomplete)
+    bar.append("]", style=THEME.dim_text)
+    return bar
+
+
 # ════════════════════════════════════════════════════════════════════════
 # ОСНОВНИЙ КЛАС
 # ════════════════════════════════════════════════════════════════════════
@@ -176,10 +333,15 @@ class LiveTUI:
         }
         self.current_file = CurrentFileState()
         self.file_log: List[LogEntry] = []
+        self.error_log: List[ErrorEntry] = []
         self.files_processed = 0
         self.start_time: float | None = None
         self._eta_seconds: float = 0.0
         self._hex_counter = 0x7F8A
+        self._detailed_view = True  # Детальний або компактний режим
+        self.run_id = "unknown"
+        self.root_path = "./"
+        self.terminal_info = "120x40"
 
     # ──────────────────────────── КЕРУВАННЯ ────────────────────────────
     def start(self, total_files: int) -> None:
@@ -284,25 +446,99 @@ class LiveTUI:
             self.current_file.note = note
             self._refresh()
 
-    def finish_file(self, status_lines: Optional[Iterable[str]] = None) -> None:
+    def finish_file(
+        self,
+        status: str = "success",
+        category: str = "",
+        message: str = "",
+        error_details: str = "",
+    ) -> None:
         """Завершити обробку поточного файлу та додати запис у журнал."""
 
         with self._lock:
-            if status_lines:
-                log_lines = [Text.from_markup(line) for line in status_lines]
-                self.file_log.append(LogEntry(lines=log_lines))
-            if self.file_log:
-                # Обмежити історію останніми 50 записами
-                self.file_log = self.file_log[-50:]
+            if self.current_file.filename:
+                # Створити детальний запис
+                log_entry = LogEntry(
+                    status=status,
+                    timestamp=time.strftime("%H:%M:%S"),
+                    hex_id=self.current_file.hex_id,
+                    filename=self.current_file.filename,
+                    size_bytes=self.current_file.size_bytes,
+                    modified_time=time.strftime("%d.%m.%Y %H:%M", time.localtime(self.current_file.modified_time))
+                    if self.current_file.modified_time
+                    else "",
+                    sha256=self.current_file.sha256,
+                    stages=dict(self.current_file.stage_progress),
+                    category=category or self.current_file.category,
+                    message=message or self.current_file.note,
+                    error_details=error_details,
+                )
+                self.file_log.append(log_entry)
 
+                # Якщо помилка - додати в лог помилок
+                if status == "error":
+                    error_entry = ErrorEntry(
+                        timestamp=log_entry.timestamp,
+                        filename=self.current_file.filename,
+                        stage=self._get_current_stage(),
+                        error_message=message,
+                        traceback=error_details,
+                    )
+                    self.error_log.append(error_entry)
+                    self.error_log = self.error_log[-20:]  # Останні 20 помилок
+
+            self.file_log = self.file_log[-50:]
             self.files_processed += 1
             self.current_file.reset()
             self._refresh()
 
-    def add_log_entry(self, lines: Iterable[str]) -> None:
+    def add_log_entry(
+        self,
+        status: str,
+        filename: str,
+        message: str = "",
+        category: str = "",
+        size_bytes: int = 0,
+        error_details: str = "",
+    ) -> None:
+        """Додати запис у журнал без поточного файлу."""
         with self._lock:
-            self.file_log.append(LogEntry(lines=[Text.from_markup(line) for line in lines]))
+            log_entry = LogEntry(
+                status=status,
+                timestamp=time.strftime("%H:%M:%S"),
+                hex_id=self._next_hex_id(),
+                filename=filename,
+                size_bytes=size_bytes,
+                modified_time="",
+                sha256="",
+                stages={},
+                category=category,
+                message=message,
+                error_details=error_details,
+            )
+            self.file_log.append(log_entry)
             self.file_log = self.file_log[-50:]
+            self._refresh()
+
+    def add_error(self, filename: str, stage: str, error_message: str, traceback: str = "") -> None:
+        """Додати запис про помилку."""
+        with self._lock:
+            error_entry = ErrorEntry(
+                timestamp=time.strftime("%H:%M:%S"),
+                filename=filename,
+                stage=stage,
+                error_message=error_message,
+                traceback=traceback,
+            )
+            self.error_log.append(error_entry)
+            self.error_log = self.error_log[-20:]
+            self.metrics.error_count += 1
+            self._refresh()
+
+    def toggle_detailed_view(self) -> None:
+        """Перемкнути між детальним та компактним режимом."""
+        with self._lock:
+            self._detailed_view = not self._detailed_view
             self._refresh()
 
     # ──────────────────────────── ДОПОМОЖНІ ─────────────────────────────
@@ -313,6 +549,28 @@ class LiveTUI:
         value = f"0x{self._hex_counter:04X}"
         self._hex_counter += 1
         return value
+
+    def _get_current_stage(self) -> str:
+        """Визначити поточний етап обробки на основі прогресу."""
+        if not self.current_file.stage_progress:
+            return "unknown"
+
+        # Знайти останній розпочатий етап
+        for stage_name, _ in reversed(self.DEFAULT_STAGES):
+            if stage_name in self.current_file.stage_progress:
+                return stage_name
+
+        return "unknown"
+
+    def set_run_info(self, run_id: str = "", root_path: str = "") -> None:
+        """Встановити інформацію про запуск."""
+        with self._lock:
+            if run_id:
+                self.run_id = run_id
+            if root_path:
+                self.root_path = root_path
+            self.terminal_info = f"{self.console.size.width}x{self.console.size.height}"
+            self._refresh()
 
     def _mini_bar(self, percent: float, width: int = 22) -> str:
         """Компактний однорядковий прогрес-бар."""
@@ -332,6 +590,7 @@ class LiveTUI:
     # ──────────────────────────── РЕНДЕР ────────────────────────────────
     def _render_display(self) -> Group:
         width = self.console.size.width
+        height = self.console.size.height
         now = time.time()
 
         total = max(self.metrics.total_files or 0, 1)
@@ -345,7 +604,15 @@ class LiveTUI:
         eta_sec = int(self.estimated_time_remaining())
         eta_str = _format_timestamp(eta_sec)
 
-        logo_text = Text(_render_ascii_logo(width=width - 4), style=THEME.logo)
+        # Оновити інформацію про термінал
+        self.terminal_info = f"{width}x{height}"
+
+        logo_text = Text(
+            _render_ascii_logo(
+                width=width - 4, run_id=self.run_id, root_path=self.root_path, terminal_info=self.terminal_info
+            ),
+            style=THEME.logo,
+        )
 
         header_lines: List[str] = [
             " PROCESSED: "
@@ -405,13 +672,26 @@ class LiveTUI:
 
         pipeline_panel = Panel(pipe_table, padding=(0, 1), border_style=THEME.border_soft)
 
+        # Логування: детальний або компактний режим
         log_lines: List[Text] = []
-        for entry in self.file_log[-6:]:
-            log_lines.extend(entry.lines)
+        if self._detailed_view:
+            # Детальний режим - показувати 3 останні записи з повною інформацією
+            num_entries = min(3, max(1, (height - 30) // 8))  # Адаптивно
+            for entry in self.file_log[-num_entries:]:
+                log_lines.extend(entry.format_detailed())
+        else:
+            # Компактний режим - показувати 6-10 записів в одну лінію
+            num_entries = min(10, max(6, (height - 20) // 2))
+            for entry in self.file_log[-num_entries:]:
+                log_lines.extend(entry.format_compact())
+
+        log_title = f"📜 PROCESSING LOG ({len(self.file_log)} total)"
+        if self._detailed_view:
+            log_title += " [DETAILED]"
 
         log_panel = Panel(
             Group(*log_lines) if log_lines else Text("Очікування подій...", style=THEME.dim_text),
-            title="PROCESSING LOG",
+            title=log_title,
             border_style=THEME.border_soft,
             padding=(0, 1),
         )
@@ -497,13 +777,56 @@ class LiveTUI:
             "",
         )
 
-        stats_panel = Panel(stats, border_style=THEME.border_soft, title="SESSION STATISTICS")
+        stats_panel = Panel(stats, border_style=THEME.border_soft, title="📈 SESSION STATISTICS")
 
-        return Group(
+        # Секція помилок (якщо є)
+        components = [
             header_panel,
             pipeline_panel,
             log_panel,
             middle_row,
             stats_panel,
-        )
+        ]
+
+        # Додати секцію помилок, якщо є помилки та достатньо місця на екрані
+        if self.error_log and height > 35:
+            error_lines: List[Text] = []
+            error_lines.append(
+                Text(
+                    f"⚠️  Total errors: {len(self.error_log)} (showing last {min(5, len(self.error_log))})",
+                    style=THEME.error,
+                )
+            )
+            error_lines.append(Text(""))
+
+            for error in self.error_log[-5:]:
+                err_line = Text()
+                err_line.append(f"[{error.timestamp}] ", style=THEME.dim_text)
+                err_line.append(f"{error.filename}", style=THEME.file_name)
+                err_line.append(f" @ {error.stage.upper()}", style=THEME.label)
+                error_lines.append(err_line)
+
+                msg_line = Text("  └─ ")
+                msg_line.append(f"❌ {error.error_message}", style=THEME.dim_text)
+                error_lines.append(msg_line)
+
+                if error.traceback:
+                    # Показати перші 2 рядки traceback
+                    tb_lines = error.traceback.split("\n")[:2]
+                    for tb_line in tb_lines:
+                        if tb_line.strip():
+                            error_lines.append(Text(f"     {tb_line[:80]}", style=THEME.dim_text))
+
+                error_lines.append(Text(""))
+
+            error_panel = Panel(
+                Group(*error_lines),
+                title="❌ ERROR LOG",
+                border_style=THEME.error,
+                padding=(0, 1),
+            )
+            # Вставити панель помилок після stats
+            components.append(error_panel)
+
+        return Group(*components)
 
