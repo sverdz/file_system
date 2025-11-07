@@ -1,84 +1,198 @@
-"""Динамічний TUI інтерфейс з реальним прогресом та статистикою."""
+"""Компактний Live TUI для відображення процесу обробки файлів."""
 from __future__ import annotations
 
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Iterable, List, Optional
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from app.theme import THEME
+from app.hacker_ui import format_file_size
+from app.theme import THEME, format_number, format_percent
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ДАНІ ДЛЯ ДИСПЛЕЯ
+# ════════════════════════════════════════════════════════════════════════
 
 
 @dataclass
-class FileProcessingInfo:
-    """Інформація про обробку поточного файлу."""
+class PipelineStage:
+    """Стан окремого етапу обробки."""
+
+    label: str
+    total: int = 0
+    completed: int = 0
+
+    @property
+    def percent(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return max(0.0, min(100.0, (self.completed / self.total) * 100.0))
+
+
+@dataclass
+class CurrentFileState:
+    """Інформація про файл, що обробляється зараз."""
+
     filename: str = ""
-    duplicates_status: str = "..."
-    classification: str = "..."
-    llm_requests: int = 0
-    llm_responses: int = 0
-    llm_error: bool = False
+    hex_id: str = ""
+    size_bytes: int = 0
+    modified_time: float = 0.0
+    sha256: str = ""
+    category: str = ""
+    note: str = ""
+    stage_progress: Dict[str, float] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        self.filename = ""
+        self.hex_id = ""
+        self.size_bytes = 0
+        self.modified_time = 0.0
+        self.sha256 = ""
+        self.category = ""
+        self.note = ""
+        self.stage_progress.clear()
 
 
 @dataclass
-class SessionStats:
-    """Статистика сесії обробки."""
+class DashboardMetrics:
+    """Агреговані метрики для дашборду."""
+
     total_files: int = 0
-    processed_files: int = 0
+    success_count: int = 0
     duplicate_groups: int = 0
     duplicate_files: int = 0
-    llm_total_requests: int = 0
-    llm_total_responses: int = 0
-    llm_tokens_sent: int = 0
-    llm_tokens_received: int = 0
-    current_stage: str = "Ініціалізація"
+    error_count: int = 0
+    skipped_count: int = 0
+    llm_requests: int = 0
+    llm_responses: int = 0
+    llm_tokens_in: int = 0
+    llm_tokens_out: int = 0
+    speed: float = 0.0
+    total_size_bytes: int = 0
+    output_size_bytes: int = 0
+    shrinkage: float = 0.0
+    avg_time: float = 0.0
+    ocr_files: int = 0
+    low_confidence: int = 0
+    long_names_fixed: int = 0
+    inventory_written: bool = False
+    quarantined: int = 0
+    anomalies: int = 0
+    no_text_files: int = 0
+    categories: Dict[str, int] = field(
+        default_factory=lambda: {"finance": 0, "legal": 0, "tech": 0, "unknown": 0}
+    )
+
+    @property
+    def llm_tokens_total(self) -> int:
+        return self.llm_tokens_in + self.llm_tokens_out
+
+
+@dataclass
+class LogEntry:
+    """Запис в журналі обробки."""
+
+    lines: List[Text]
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _render_ascii_logo(width: int) -> str:
+    """Повернути ASCII-логотип, адаптований до ширини."""
+
+    banner = [
+        " ███████╗██╗██╗     ███████╗    INVENTORY & CLASSIFICATION PIPELINE",
+        " ██╔════╝██║██║     ██╔════╝    RUN ID: --:--",
+        " █████╗  ██║██║     █████╗      ROOT: ./",
+        " ██╔══╝  ██║██║     ██╔══╝      TERMINAL: 120x40  MODE: RICH+EMOJI",
+        " ██║     ██║███████╗███████╗    USER: OPERATOR",
+    ]
+
+    padded = []
+    border_width = max(min(width, max(len(line) for line in banner) + 4), 40)
+    border_line = "╔" + "═" * (border_width - 2) + "╗"
+    padded.append(border_line)
+    for line in banner:
+        clipped = line[: border_width - 4]
+        padded.append("║ " + clipped.ljust(border_width - 4) + " ║")
+    padded.append("╚" + "═" * (border_width - 2) + "╝")
+    return "\n".join(padded)
+
+
+def _format_timestamp(seconds: float) -> str:
+    if seconds <= 0:
+        return "--:--:--"
+    return time.strftime("%H:%M:%S", time.gmtime(seconds))
+
+
+def _build_stage_bar(percent: float) -> str:
+    percent = max(0.0, min(100.0, percent))
+    width = 4
+    filled = int(round(width * percent / 100.0))
+    filled = min(width, max(0, filled))
+    empty = width - filled
+    return (
+        f"[{THEME.bar_complete}]" + "█" * filled + f"[/{THEME.bar_complete}]"
+        + f"[{THEME.bar_incomplete}]" + "░" * empty + f"[/{THEME.bar_incomplete}]"
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ОСНОВНИЙ КЛАС
+# ════════════════════════════════════════════════════════════════════════
 
 
 class LiveTUI:
-    """Живий TUI інтерфейс з динамічним оновленням."""
+    """Живий TUI-дешборд з компактним макетом на одному екрані."""
 
-    def __init__(self, console: Optional[Console] = None):
+    DEFAULT_STAGES = (
+        ("scan", "SCAN"),
+        ("dedup", "DEDUP"),
+        ("extract", "EXTRACT"),
+        ("classify", "CLASSIFY"),
+        ("rename", "RENAME"),
+        ("inventory", "INVENTORY"),
+    )
+
+    def __init__(self, console: Optional[Console] = None) -> None:
         self.console = console or Console()
-        self.stats = SessionStats()
-        self.current_file = FileProcessingInfo()
         self.live: Optional[Live] = None
-        self.progress: Optional[Progress] = None
-        self.progress_task = None
         self._lock = threading.Lock()
         self._running = False
 
+        self.metrics = DashboardMetrics()
+        self.stages: Dict[str, PipelineStage] = {
+            name: PipelineStage(label=label) for name, label in self.DEFAULT_STAGES
+        }
+        self.current_file = CurrentFileState()
+        self.file_log: List[LogEntry] = []
+        self.files_processed = 0
+        self.start_time: float | None = None
+        self._eta_seconds: float = 0.0
+        self._hex_counter = 0x7F8A
+
+    # ──────────────────────────── КЕРУВАННЯ ────────────────────────────
     def start(self, total_files: int) -> None:
-        """Запустити живий інтерфейс."""
+        """Запустити Live-інтерфейс."""
+
         with self._lock:
-            self.stats.total_files = total_files
-            self.stats.processed_files = 0
+            self.metrics.total_files = total_files
+            self.files_processed = 0
+            self.start_time = time.time()
             self._running = True
 
-            # Створити прогрес-бар
-            self.progress = Progress(
-                TextColumn(f"[bold {THEME.progress_text}]{{task.description}}"),
-                BarColumn(bar_width=50, complete_style=THEME.success, finished_style=THEME.success),
-                TextColumn(f"[bold {THEME.number_primary}]{{task.completed}}/{{task.total}}"),
-                TextColumn(f"[bold {THEME.progress_percent}]{{task.percentage:>3.0f}}%"),
-                TimeElapsedColumn(),
-                console=self.console,
-            )
-            self.progress_task = self.progress.add_task(
-                "Обробка файлів...",
-                total=total_files,
-                completed=0,
-            )
-
-            # Запустити Live Display
             self.live = Live(
-                self._render(),
+                self._render_display(),
                 console=self.console,
                 refresh_per_second=4,
                 transient=False,
@@ -86,199 +200,310 @@ class LiveTUI:
             self.live.start()
 
     def stop(self) -> None:
-        """Зупинити живий інтерфейс."""
+        """Зупинити Live-інтерфейс."""
+
         with self._lock:
             self._running = False
             if self.live:
                 self.live.stop()
                 self.live = None
-            if self.progress:
-                self.progress.stop()
-                self.progress = None
 
-    def update_stage(self, stage: str) -> None:
-        """Оновити поточний етап."""
+    # ──────────────────────────── ОНОВЛЕННЯ ────────────────────────────
+    def update_metrics(self, **values: float | int | bool | Dict[str, int]) -> None:
+        """Оновити будь-які метрики дашборду."""
+
         with self._lock:
-            self.stats.current_stage = stage
+            for key, value in values.items():
+                if key == "categories" and isinstance(value, dict):
+                    self.metrics.categories.update(value)
+                    continue
+                if hasattr(self.metrics, key):
+                    setattr(self.metrics, key, value)
             self._refresh()
 
-    def start_file(self, filename: str) -> None:
-        """Почати обробку нового файлу."""
+    def update_eta(self, seconds: float) -> None:
         with self._lock:
-            # Очистити дані попереднього файлу
-            self.current_file = FileProcessingInfo(filename=filename)
+            self._eta_seconds = max(0.0, seconds)
             self._refresh()
 
-    def update_duplicates(self, status: str) -> None:
-        """Оновити статус дублікатів."""
+    def update_speed(self, files_per_second: float) -> None:
+        self.update_metrics(speed=files_per_second)
+
+    def set_stage_totals(self, totals: Dict[str, int]) -> None:
         with self._lock:
-            self.current_file.duplicates_status = status
+            for name, total in totals.items():
+                if name in self.stages:
+                    self.stages[name].total = max(0, int(total))
             self._refresh()
 
-    def update_classification(self, category: str) -> None:
-        """Оновити класифікацію."""
+    def update_stage_progress(
+        self, stage: str, completed: Optional[int] = None, total: Optional[int] = None
+    ) -> None:
         with self._lock:
-            self.current_file.classification = category
+            if stage not in self.stages:
+                return
+            if total is not None:
+                self.stages[stage].total = max(0, int(total))
+            if completed is not None:
+                self.stages[stage].completed = max(0, int(completed))
             self._refresh()
 
-    def update_llm(self, requests: int = 0, responses: int = 0, error: bool = False) -> None:
-        """Оновити LLM статистику для поточного файлу."""
+    def start_file(
+        self,
+        filename: str,
+        *,
+        size_bytes: int = 0,
+        modified_time: float = 0.0,
+        sha256: str = "",
+        hex_id: Optional[str] = None,
+    ) -> None:
+        """Позначити початок обробки нового файлу."""
+
         with self._lock:
-            if requests > 0:
-                self.current_file.llm_requests += requests
-                self.stats.llm_total_requests += requests
-            if responses > 0:
-                self.current_file.llm_responses += responses
-                self.stats.llm_total_responses += responses
-            if error:
-                self.current_file.llm_error = True
+            self.current_file = CurrentFileState(
+                filename=filename,
+                size_bytes=size_bytes,
+                modified_time=modified_time,
+                sha256=sha256,
+                hex_id=hex_id or self._next_hex_id(),
+            )
             self._refresh()
 
-    def update_llm_tokens(self, sent: int = 0, received: int = 0) -> None:
-        """Оновити токени LLM."""
+    def update_current_file_stage(self, stage: str, percent: float) -> None:
         with self._lock:
-            self.stats.llm_tokens_sent += sent
-            self.stats.llm_tokens_received += received
+            self.current_file.stage_progress[stage] = max(0.0, min(100.0, percent))
             self._refresh()
 
-    def finish_file(self) -> None:
-        """Завершити обробку файлу."""
+    def update_current_file_category(self, category: str) -> None:
         with self._lock:
-            self.stats.processed_files += 1
-            if self.progress and self.progress_task is not None:
-                self.progress.update(self.progress_task, completed=self.stats.processed_files)
-            # Очистити поточний файл після завершення
-            self.current_file = FileProcessingInfo()
+            self.current_file.category = category
             self._refresh()
 
-    def add_duplicate_group(self, files_count: int = 0) -> None:
-        """Додати групу дублікатів."""
+    def update_current_file_note(self, note: str) -> None:
         with self._lock:
-            self.stats.duplicate_groups += 1
-            if files_count > 0:
-                self.stats.duplicate_files += files_count
+            self.current_file.note = note
             self._refresh()
+
+    def finish_file(self, status_lines: Optional[Iterable[str]] = None) -> None:
+        """Завершити обробку поточного файлу та додати запис у журнал."""
+
+        with self._lock:
+            if status_lines:
+                log_lines = [Text.from_markup(line) for line in status_lines]
+                self.file_log.append(LogEntry(lines=log_lines))
+            if self.file_log:
+                # Обмежити історію останніми 50 записами
+                self.file_log = self.file_log[-50:]
+
+            self.files_processed += 1
+            self.current_file.reset()
+            self._refresh()
+
+    def add_log_entry(self, lines: Iterable[str]) -> None:
+        with self._lock:
+            self.file_log.append(LogEntry(lines=[Text.from_markup(line) for line in lines]))
+            self.file_log = self.file_log[-50:]
+            self._refresh()
+
+    # ──────────────────────────── ДОПОМОЖНІ ─────────────────────────────
+    def estimated_time_remaining(self) -> float:
+        return self._eta_seconds
+
+    def _next_hex_id(self) -> str:
+        value = f"0x{self._hex_counter:04X}"
+        self._hex_counter += 1
+        return value
+
+    def _mini_bar(self, percent: float, width: int = 22) -> str:
+        """Компактний однорядковий прогрес-бар."""
+
+        percent = max(0.0, min(100.0, percent))
+        filled = int(width * (percent / 100.0))
+        empty = width - filled
+        return (
+            f"[{THEME.bar_complete}]" + "█" * filled + f"[/{THEME.bar_complete}]"
+            + f"[{THEME.bar_incomplete}]" + "░" * empty + f"[/{THEME.bar_incomplete}]"
+        )
 
     def _refresh(self) -> None:
-        """Оновити відображення."""
         if self.live and self._running:
-            self.live.update(self._render())
+            self.live.update(self._render_display())
 
-    def _render(self) -> Group:
-        """Відрендерити інтерфейс."""
-        # Статус-бар
-        status_table = Table.grid(padding=(0, 2))
-        status_table.add_column(style=f"bold {THEME.progress_percent}")
-        status_table.add_column(style=f"bold {THEME.info}")
-        status_table.add_column(style=f"bold {THEME.duplicate}")
+    # ──────────────────────────── РЕНДЕР ────────────────────────────────
+    def _render_display(self) -> Group:
+        width = self.console.size.width
+        now = time.time()
 
-        progress_text = f"{self.stats.processed_files}/{self.stats.total_files}"
-        percentage = (
-            int(100 * self.stats.processed_files / self.stats.total_files)
-            if self.stats.total_files > 0
-            else 0
+        total = max(self.metrics.total_files or 0, 1)
+        done = min(self.files_processed, total)
+        pending = max(total - done, 0)
+        global_pct = (done / total) * 100.0
+
+        elapsed = int(now - self.start_time) if self.start_time else 0
+        elapsed_str = _format_timestamp(elapsed)
+
+        eta_sec = int(self.estimated_time_remaining())
+        eta_str = _format_timestamp(eta_sec)
+
+        logo_text = Text(_render_ascii_logo(width=width - 4), style=THEME.logo)
+
+        header_lines: List[str] = [
+            " PROCESSED: "
+            f"[{THEME.number_primary}]{done}[/]/[{THEME.number_primary}]{total}[/]  "
+            f"SUCCESS: [{THEME.number_success}]{self.metrics.success_count}[/]  "
+            f"WARN: [{THEME.warning}]{self.metrics.duplicate_groups}[/]  "
+            f"ERR: [{THEME.error}]{self.metrics.error_count}[/]  "
+            f"PENDING: [{THEME.number_primary}]{pending}[/]"
+        ]
+
+        if self.metrics.llm_requests or self.metrics.llm_responses:
+            header_lines.append(
+                f" 🤖 LLM {self.metrics.llm_requests}/{self.metrics.llm_responses}   "
+                f"TOKENS ~{format_number(self.metrics.llm_tokens_in)}→{format_number(self.metrics.llm_tokens_out)}"
+            )
+
+        header_lines.append(f"⏱ {elapsed_str}   ETA {eta_str}")
+        header_lines.append(
+            f" GLOBAL: {self._mini_bar(global_pct, width=32)}  {format_percent(global_pct)}   "
+            f"SPEED: {format_number(self.metrics.speed or 0.0)} files/s   "
+            f"SIZE: {format_file_size(self.metrics.total_size_bytes or 0)}"
         )
-        status_table.add_row(
-            f"📊 Прогрес: {progress_text} ({percentage}%)",
-            f"📍 Етап: {self.stats.current_stage}",
-            f"🔍 Дублікатів: {self.stats.duplicate_groups} груп",
-        )
 
-        status_panel = Panel(
-            status_table,
-            title=f"[bold {THEME.title}]СТАТУС ОБРОБКИ",
+        header_info = Text.from_markup("\n".join(header_lines))
+
+        header_panel = Panel(
+            Group(logo_text, header_info),
             border_style=THEME.border,
             padding=(0, 1),
         )
 
-        # Панель поточного файлу
-        if self.current_file.filename:
-            file_table = Table.grid(padding=(0, 1))
-            file_table.add_column("Параметр", style=f"dim {THEME.info}")
-            file_table.add_column("Значення", style="bold")
+        pipe_table = Table.grid(padding=(0, 1))
+        pipe_table.expand = True
+        pipe_table.add_row(f"[{THEME.title}]PIPELINE[/]", "", "", "")
 
-            # Назва файлу
-            file_table.add_row(
-                "📄 Файл:",
-                Text(self.current_file.filename, style=f"bold {THEME.file_name}"),
+        for stage_name, label in self.DEFAULT_STAGES:
+            stage = self.stages[stage_name]
+            pct = stage.percent
+            extra = ""
+            if stage_name == "dedup" and self.metrics.duplicate_groups:
+                extra = f"{self.metrics.duplicate_groups} groups"
+            elif stage_name == "extract" and self.metrics.ocr_files:
+                extra = f"OCR {self.metrics.ocr_files}"
+            elif stage_name == "classify" and self.metrics.low_confidence:
+                extra = f"low-conf {self.metrics.low_confidence}"
+            elif stage_name == "rename" and self.metrics.long_names_fixed:
+                extra = f"long-names {self.metrics.long_names_fixed}"
+            elif stage_name == "inventory" and self.metrics.inventory_written:
+                extra = "inventory.xlsx"
+
+            pipe_table.add_row(
+                f"[{THEME.label}]{label}[/]",
+                f"[{THEME.number_primary}]{stage.completed}/{stage.total}[/]",
+                self._mini_bar(pct, width=18),
+                f"[{THEME.dim_text}]{extra}[/]",
             )
 
-            # Дублікати
-            dup_color = THEME.success if "немає" in self.current_file.duplicates_status.lower() else THEME.warning
-            file_table.add_row(
-                "🔎 Дублікати:",
-                Text(self.current_file.duplicates_status, style=dup_color),
-            )
+        pipeline_panel = Panel(pipe_table, padding=(0, 1), border_style=THEME.border_soft)
 
-            # Класифікація
-            file_table.add_row(
-                "🏷️  Категорія:",
-                Text(self.current_file.classification, style=f"bold {THEME.category}"),
-            )
+        log_lines: List[Text] = []
+        for entry in self.file_log[-6:]:
+            log_lines.extend(entry.lines)
 
-            # LLM статус
-            llm_status = f"Запитів: {self.current_file.llm_requests} | Відповідей: {self.current_file.llm_responses}"
-            if self.current_file.llm_error:
-                llm_status += " | ❌ Помилка"
-            llm_color = THEME.error if self.current_file.llm_error else THEME.llm_request
-            file_table.add_row(
-                "🤖 LLM:",
-                Text(llm_status, style=llm_color),
-            )
-
-            current_file_panel = Panel(
-                file_table,
-                title=f"[bold {THEME.progress_percent}]ПОТОЧНИЙ ФАЙЛ",
-                border_style=THEME.progress_percent,
-                padding=(0, 1),
-            )
-        else:
-            current_file_panel = Panel(
-                Text("Очікування файлу...", style="dim"),
-                title=f"[bold {THEME.progress_percent}]ПОТОЧНИЙ ФАЙЛ",
-                border_style=f"dim {THEME.progress_percent}",
-                padding=(0, 1),
-            )
-
-        # Прогрес-бар
-        if self.progress:
-            progress_panel = Panel(
-                self.progress,
-                title=f"[bold {THEME.progress_bar}]ПРОГРЕС",
-                border_style=THEME.progress_bar,
-                padding=(0, 1),
-            )
-        else:
-            progress_panel = Panel("", border_style="dim")
-
-        # Об'єднати всі компоненти
-        return Group(
-            status_panel,
-            current_file_panel,
-            progress_panel,
+        log_panel = Panel(
+            Group(*log_lines) if log_lines else Text("Очікування подій...", style=THEME.dim_text),
+            title="PROCESSING LOG",
+            border_style=THEME.border_soft,
+            padding=(0, 1),
         )
 
-    def show_final_stats(self) -> None:
-        """Показати фінальну статистику."""
-        self.stop()
+        if self.current_file.filename:
+            file_table = Table.grid(padding=(0, 1))
+            file_table.add_row(
+                f"[{THEME.processing}]⚙️[{THEME.dim_text}][{self.current_file.hex_id or '--'}][/][/{THEME.dim_text}]"
+                f" [{THEME.file_name}]{self.current_file.filename}[/]"
+            )
+            file_table.add_row(
+                f"SIZE: {format_file_size(self.current_file.size_bytes)}   "
+                f"SHA: [{THEME.dim_text}]{(self.current_file.sha256 or '--')[:8]}...[/]"
+            )
 
-        # Створити таблицю статистики
-        stats_table = Table(title=f"[bold {THEME.success}]ПІДСУМКОВА СТАТИСТИКА СЕСІЇ", show_header=False)
-        stats_table.add_column("Параметр", style=f"bold {THEME.header}", width=40)
-        stats_table.add_column("Значення", style=f"bold {THEME.number_primary}", justify="right")
+            if self.current_file.stage_progress:
+                pipeline_parts = []
+                for stage_name, label in self.DEFAULT_STAGES:
+                    percent = self.current_file.stage_progress.get(stage_name, 0.0)
+                    pipeline_parts.append(f" {label} {_build_stage_bar(percent)}")
+                file_table.add_row("PIPELINE:" + "".join(pipeline_parts))
 
-        stats_table.add_row("📊 Загальна кількість файлів", str(self.stats.total_files))
-        stats_table.add_row("✅ Оброблено файлів", str(self.stats.processed_files))
-        stats_table.add_row("🔍 Знайдено груп дублікатів", str(self.stats.duplicate_groups))
-        stats_table.add_row("📁 Файлів-дублікатів", str(self.stats.duplicate_files))
-        stats_table.add_row("🤖 LLM запитів (всього)", str(self.stats.llm_total_requests))
-        stats_table.add_row("✅ LLM відповідей (всього)", str(self.stats.llm_total_responses))
-        stats_table.add_row("📤 Токенів надіслано", f"{self.stats.llm_tokens_sent:,}")
-        stats_table.add_row("📥 Токенів отримано", f"{self.stats.llm_tokens_received:,}")
+            category_line = ""
+            if self.current_file.category:
+                category_line = f" → [{THEME.category}]{self.current_file.category}[/]"
+            if self.current_file.note:
+                category_line += f"   [{THEME.dim_text}]{self.current_file.note}[/]"
+            if category_line:
+                file_table.add_row(category_line.strip())
 
-        total_tokens = self.stats.llm_tokens_sent + self.stats.llm_tokens_received
-        stats_table.add_row("💬 Всього токенів", f"[bold {THEME.progress_percent}]{total_tokens:,}")
+            current_panel = Panel(
+                file_table,
+                title="CURRENTLY PROCESSING",
+                border_style=THEME.border_soft,
+                padding=(0, 1),
+            )
+        else:
+            current_panel = Panel(
+                Text("Немає активного файлу", style=THEME.dim_text),
+                title="CURRENTLY PROCESSING",
+                border_style=THEME.border_soft,
+            )
 
-        self.console.print("\n")
-        self.console.print(stats_table)
-        self.console.print("\n")
+        snap_table = Table.grid(padding=(0, 0))
+        snap_table.add_row(f"[{THEME.title}]DATA SNAPSHOT[/]")
+        categories = self.metrics.categories
+        snap_table.add_row(
+            f"[{THEME.label}]FINANCE[/]: {categories.get('finance', 0)}   "
+            f"[{THEME.label}]LEGAL[/]: {categories.get('legal', 0)}   "
+            f"[{THEME.label}]TECH[/]: {categories.get('tech', 0)}"
+        )
+        snap_table.add_row(
+            f"[{THEME.label}]UNKNOWN[/]: {categories.get('unknown', 0)}   "
+            f"DUP GROUPS: {self.metrics.duplicate_groups}   "
+            f"QUARANTINED: {self.metrics.quarantined}"
+        )
+        snap_table.add_row(
+            f"ANOMALIES: {self.metrics.anomalies}   "
+            f"OCR: {self.metrics.ocr_files}   "
+            f"NO-TEXT: {self.metrics.no_text_files}"
+        )
+        snapshot_panel = Panel(snap_table, border_style=THEME.border_soft)
+
+        middle_row = Table.grid(expand=True)
+        middle_row.add_column(ratio=3)
+        middle_row.add_column(ratio=2)
+        middle_row.add_row(current_panel, snapshot_panel)
+
+        stats = Table.grid(padding=(0, 2))
+        success_rate = (self.metrics.success_count / total * 100.0) if total else 0.0
+        stats.add_row(
+            f"SUCCESS {self.metrics.success_count} ({format_percent(success_rate)})",
+            f"WARN {self.metrics.duplicate_groups}",
+            f"ERR {self.metrics.error_count}",
+            f"OCR {self.metrics.ocr_files}",
+            f"LLM USED {self.metrics.llm_requests}",
+        )
+        stats.add_row(
+            f"AVG/file {format_number(self.metrics.avg_time or 0.0)} s",
+            f"INPUT {format_file_size(self.metrics.total_size_bytes or 0)}",
+            f"OUTPUT {format_file_size(self.metrics.output_size_bytes or 0)}",
+            f"SHRINK {format_percent(self.metrics.shrinkage or 0.0)}",
+            "",
+        )
+
+        stats_panel = Panel(stats, border_style=THEME.border_soft, title="SESSION STATISTICS")
+
+        return Group(
+            header_panel,
+            pipeline_panel,
+            log_panel,
+            middle_row,
+            stats_panel,
+        )
+
