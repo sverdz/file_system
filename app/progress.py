@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Tuple, Optional
+from typing import Dict, Iterable, Tuple, Optional, List
+from pathlib import Path
 
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console, Group
@@ -52,10 +54,41 @@ class CurrentFileStatus:
     stage: str = ""  # "extract", "classify", "rename", тощо
     status: str = ""  # "processing", "success", "error"
     error_msg: str = ""
+    size: int = 0  # Розмір файлу в байтах
+    modified_time: float = 0  # Час модифікації
+    sha_hash: str = ""  # SHA-256 хеш
+    hex_id: str = ""  # Hex адреса для хакерського вигляду
+
+
+@dataclass
+class FileLogEntry:
+    """Запис у лозі обробки файлу."""
+    hex_id: str
+    timestamp: str
+    filename: str
+    size: int
+    modified_date: str
+    sha_hash: str
+    status: str  # "success", "error", "duplicate", "skipped"
+    duplicate_info: str = ""
+    text_length: int = 0
+    llm_response: str = ""
+    category: str = ""
+    destination: str = ""
+    processing_time: Dict[str, float] = field(default_factory=dict)  # {"dedup": 0.24, "extract": 1.82, ...}
+
+
+@dataclass
+class QueuedFile:
+    """Файл у черзі обробки."""
+    hex_id: str
+    filename: str
+    size: int
+    modified_date: str
 
 
 class ProgressTracker:
-    def __init__(self, stages: Dict[str, float]):
+    def __init__(self, stages: Dict[str, float], scan_dir: str = ""):
         self.stages = {name: StageProgress(weight=weight) for name, weight in stages.items()}
         self.history: list[Tuple[float, float]] = []
         self.progress: Optional[Progress] = None
@@ -69,38 +102,20 @@ class ProgressTracker:
         self.start_time = time.time()
         self.use_compact_view = True  # За замовчуванням компактний вигляд
 
+        # Хакерський інтерфейс
+        self.scan_dir = scan_dir  # Поточна папка сканування
+        self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів
+        self.file_queue: List[QueuedFile] = []  # Черга файлів
+        self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
+
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
         if self.use_compact_view:
-            # Створити прогрес-бар
-            self.progress = Progress(
-                SpinnerColumn(style=THEME.processing),
-                TextColumn(f"[bold {THEME.title}]{{task.description}}"),
-                BarColumn(
-                    bar_width=40,
-                    complete_style=THEME.progress_bar,
-                    finished_style=THEME.success
-                ),
-                TextColumn(f"[{THEME.progress_percent}]{{task.percentage:>3.0f}}%"),
-                TextColumn(f"[{THEME.number_primary}]{{task.completed}}/{{task.total}}"),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-                console=self.console,
-            )
-
-            # Один глобальний прогрес
-            task_id = self.progress.add_task(
-                "⚙️  Обробка файлів",
-                total=100,
-                completed=0
-            )
-            self.task_ids["global"] = task_id
-
-            # Запустити Live display
+            # Запустити Live display (БЕЗ прогрес-бару - він буде в _render_display)
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=4,
+                refresh_per_second=10,  # Плавна анімація
                 transient=False
             )
             self.live.start()

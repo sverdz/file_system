@@ -565,10 +565,6 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
             tracker.increment("extract")
 
-            # Показати статус кожні 10 файлів
-            if idx % 10 == 0:
-                tracker.show_status()
-
         update_progress(run_dir, tracker)
 
         tracker.set_stage_total("classify", len(metas))
@@ -695,9 +691,6 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 error_count=renamed_failed
             )
 
-            # Показати статус кожні 10 файлів
-            if idx % 10 == 0:
-                tracker.show_status()
             meta_path = plan.meta.path
             ctx = file_contexts[meta_path]
             dup_info = duplicates_map.get(
