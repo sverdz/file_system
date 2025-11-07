@@ -122,20 +122,10 @@ class ProgressTracker:
         self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
         self.files_processed: int = 0  # Скільки файлів оброблено
         self.total_files: int = 0  # Загальна кількість файлів
-        self.last_update_time: float = 0  # Час останнього оновлення дисплею
 
-    def _should_update_display(self) -> bool:
-        """Перевірити чи потрібно оновлювати дисплей (throttling)."""
-        current_time = time.time()
-        # Оновлювати максимум раз на 0.5 секунди
-        if current_time - self.last_update_time >= 0.5:
-            self.last_update_time = current_time
-            return True
-        return False
-
-    def _update_display_if_needed(self) -> None:
-        """Оновити дисплей якщо пройшло достатньо часу."""
-        if self.live and self.use_compact_view and self._should_update_display():
+    def _update_display_now(self) -> None:
+        """Оновити дисплей ЗАВЖДИ (без throttling)."""
+        if self.live and self.use_compact_view:
             self.live.update(self._render_display())
 
     def start_visual(self) -> None:
@@ -145,7 +135,7 @@ class ProgressTracker:
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=2,  # Зменшено для продуктивності (було 10)
+                refresh_per_second=4,  # 4 FPS для плавного таймера
                 transient=False
             )
             self.live.start()
@@ -236,7 +226,7 @@ class ProgressTracker:
                 self.progress.update(self.task_ids["global"], completed=global_percent)
                 # Оновити Live display
                 if self.live:
-                    self._update_display_if_needed()
+                    self._update_display_now()
             elif stage in self.task_ids:
                 self.progress.update(self.task_ids[stage], completed=sp.completed)
 
@@ -267,7 +257,7 @@ class ProgressTracker:
             self.metrics.llm_responses = llm_responses
 
         # Оновити Live display (з throttling)
-        self._update_display_if_needed()
+        self._update_display_now()
 
     def set_current_file(
         self,
@@ -288,7 +278,7 @@ class ProgressTracker:
 
             # Оновити Live display
             if self.live and self.use_compact_view:
-                self._update_display_if_needed()
+                self._update_display_now()
             return
 
         # Новий файл - скинути все
@@ -321,7 +311,7 @@ class ProgressTracker:
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self._update_display_if_needed()
+            self._update_display_now()
 
     def add_to_log(
         self,
@@ -366,7 +356,7 @@ class ProgressTracker:
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self._update_display_if_needed()
+            self._update_display_now()
 
     def populate_queue(self, file_paths: List[str]) -> None:
         """Заповнити чергу файлів - зберігає ВСІ файли, показує тільки 5."""
@@ -408,7 +398,7 @@ class ProgressTracker:
 
         # Оновити Live display
         if self.live and self.use_compact_view:
-            self._update_display_if_needed()
+            self._update_display_now()
 
     def remove_from_queue(self, filename: str) -> None:
         """Видалити файл з черги - просто переходимо до наступного."""
