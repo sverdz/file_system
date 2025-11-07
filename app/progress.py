@@ -72,7 +72,7 @@ class ProgressTracker:
             # Компактний вигляд: один прогрес-бар
             self.progress = Progress(
                 SpinnerColumn(style=THEME.processing),
-                TextColumn("[{task_color}]{task.description}"),
+                TextColumn("{task.description}"),
                 BarColumn(complete_style=THEME.progress_bar, finished_style=THEME.success),
                 TextColumn(f"[{THEME.progress_percent}]{{task.percentage:>3.0f}}%"),
                 TextColumn(f"[{THEME.number_primary}]{{task.completed}}/{{task.total}}"),
@@ -86,8 +86,7 @@ class ProgressTracker:
             task_id = self.progress.add_task(
                 markup(THEME.title, "Обробка файлів"),
                 total=100,
-                completed=0,
-                task_color=THEME.title
+                completed=0
             )
             self.task_ids["global"] = task_id
         else:
