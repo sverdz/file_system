@@ -15,7 +15,7 @@ class ColorTheme:
     # Текст та інформація
     primary_text: str = "white"           # Основний текст
     secondary_text: str = "bright_white"  # Виділений текст
-    dim_text: str = "grey70"              # Другорядна інформація
+    dim_text: str = "cyan"                # Другорядна інформація
 
     # Статуси та стани
     success: str = "bright_green"         # Успішні операції
@@ -47,7 +47,7 @@ class ColorTheme:
     # Категорії файлів
     category: str = "bright_magenta"      # Назва категорії
     file_name: str = "bright_white"       # Ім'я файлу
-    file_path: str = "grey70"             # Шлях до файлу
+    file_path: str = "bright_blue"        # Шлях до файлу
 
     # Дублікати
     duplicate: str = "bright_yellow"      # Виявлені дублікати
@@ -59,12 +59,12 @@ class ColorTheme:
     classification: str = "bright_green"  # Класифікація документів
 
     # ═══════════════════════════════════════════════════════════
-    # ДЕКОРАТИВНІ ЕЛЕМЕНТИ (НИЖЧИЙ КОНТРАСТ)
+    # ДЕКОРАТИВНІ ЕЛЕМЕНТИ
     # ═══════════════════════════════════════════════════════════
 
-    decoration: str = "blue"              # Декоративні лінії
-    separator: str = "grey50"             # Роздільники
-    background_accent: str = "grey30"     # Фонові акценти
+    decoration: str = "bright_blue"       # Декоративні лінії
+    separator: str = "cyan"               # Роздільники
+    background_accent: str = "blue"       # Фонові акценти
 
 
 # Глобальна тема за замовчуванням
