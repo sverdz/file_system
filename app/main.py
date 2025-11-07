@@ -529,8 +529,24 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             start_time = time.time()
             try:
                 ensure_hash(meta)
+
+                # Етап 1: Вилучення тексту
                 result = extract_text(meta, cfg.ocr_lang)
-                # Використовуємо LLM для класифікації якщо доступний
+
+                # Оновити статус після extract
+                tracker.set_current_file(
+                    name=meta.path.name,
+                    stage="extract",
+                    status="success",
+                )
+
+                # Етап 2: Класифікація через LLM
+                tracker.set_current_file(
+                    name=meta.path.name,
+                    stage="classify",
+                    status="processing",
+                )
+
                 classification = classify_text(result.text, llm_client=llm_client)
                 category = classification.get("category") or "інше"
                 date_doc = classification.get("date_doc") or datetime.fromtimestamp(meta.mtime).date().isoformat()
@@ -548,9 +564,9 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 # Успішно оброблено
                 extract_time = time.time() - start_time
 
+                # Оновити статус (БЕЗ зміни path!)
                 tracker.set_current_file(
                     name=meta.path.name,
-                    path=str(meta.path),
                     category=category,
                     stage="classify",
                     status="success",
@@ -576,9 +592,9 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 console.print(markup(THEME.warning, f"⚠ {error_msg}"))
                 extract_time = time.time() - start_time
 
+                # Оновити статус помилки (БЕЗ зміни path!)
                 tracker.set_current_file(
                     name=meta.path.name,
-                    path=str(meta.path),
                     stage="extract",
                     status="error",
                     error_msg=str(exc),
