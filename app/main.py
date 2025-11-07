@@ -525,8 +525,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
             tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
 
-            # Засікти час початку обробки
-            start_time = time.time()
+            # Засікти час початку обробки (уникати перезапису глобального start_time)
+            file_start_time = time.time()
             try:
                 ensure_hash(meta)
 
@@ -562,7 +562,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 )
 
                 # Успішно оброблено
-                extract_time = time.time() - start_time
+                extract_time = time.time() - file_start_time
 
                 # Оновити статус (БЕЗ зміни path!)
                 tracker.set_current_file(
@@ -590,7 +590,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 error_count += 1
                 error_msg = f"Не вдалося обробити: {exc}"
                 console.print(markup(THEME.warning, f"⚠ {error_msg}"))
-                extract_time = time.time() - start_time
+                extract_time = time.time() - file_start_time
 
                 # Оновити статус помилки (БЕЗ зміни path!)
                 tracker.set_current_file(
@@ -738,9 +738,17 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             tracker.increment("rename")
 
             # Оновити метрики успішності
+            # Оновити агреговані лічильники, не обнуляючи попередні значення
+            current_success = tracker.metrics.success_count
+            current_errors = tracker.metrics.error_count
+            if status == "success":
+                current_success += 1
+            elif status == "failed":
+                current_errors += 1
+
             tracker.update_metrics(
-                success_count=renamed_ok,
-                error_count=renamed_failed
+                success_count=current_success,
+                error_count=current_errors,
             )
 
             meta_path = plan.meta.path
