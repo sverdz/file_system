@@ -441,6 +441,7 @@ def execute_pipeline(
                     api_key=api_key,
                     model=cfg.llm_model,
                     enabled=True,
+                    session_dir=session.session_dir,
                 )
                 console.print(
                     f"[green]✓[/green] LLM увімкнено: {cfg.llm_provider} ({cfg.llm_model or 'default'})"
@@ -502,7 +503,11 @@ def execute_pipeline(
                     prev_sent = stats_before["tokens_sent"]
                     prev_recv = stats_before["tokens_received"]
 
-                    classification = classify_text(result.text, llm_client=llm_client)
+                    classification = classify_text(
+                        result.text,
+                        llm_client=llm_client,
+                        filename=meta.path.name
+                    )
 
                     # Обчислюємо різницю токенів
                     stats_after = llm_client.get_stats()
@@ -513,7 +518,7 @@ def execute_pipeline(
                         tui.update_llm(responses=1)
                         tui.update_llm_tokens(sent=new_sent, received=new_recv)
                 else:
-                    classification = classify_text(result.text)
+                    classification = classify_text(result.text, filename=meta.path.name)
 
                 category = classification.get("category") or "інше"
                 tui.update_classification(category)
@@ -793,6 +798,12 @@ def execute_pipeline(
         try:
             write_inventory(rows, summary, session.session_dir)
 
+            # Зберегти повний лог LLM запитів/відповідей
+            if llm_client and llm_client.request_log:
+                llm_log_path = llm_client.save_log_to_file(session.session_dir)
+                if llm_log_path:
+                    console.print(f"[dim]LLM лог збережено: {llm_log_path.name}[/dim]")
+
             # Створити додаткові звіти
             _create_session_reports(session, metas, exact_groups, rename_plans, llm_client, summary)
 
@@ -905,11 +916,19 @@ def _create_session_reports(
             llm_report.append("=" * 80)
             llm_report.append(f"\nПровайдер: {llm_client.provider}")
             llm_report.append(f"Модель: {llm_client.model}")
-            llm_report.append(f"\nЗапитів надіслано: {stats['requests']}")
-            llm_report.append(f"Відповідей отримано: {stats['responses']}")
-            llm_report.append(f"\nТокенів надіслано: {stats['tokens_sent']:,}")
-            llm_report.append(f"Токенів отримано: {stats['tokens_received']:,}")
-            llm_report.append(f"Всього токенів: {stats['tokens']:,}")
+            llm_report.append(f"\nЛІМІТИ:")
+            llm_report.append(f"  Максимум символів на вхід: {llm_client.MAX_INPUT_LENGTH}")
+            llm_report.append(f"  Максимум символів відображення: {llm_client.MAX_OUTPUT_DISPLAY}")
+            llm_report.append(f"\nСТАТИСТИКА:")
+            llm_report.append(f"  Запитів надіслано: {stats['requests']}")
+            llm_report.append(f"  Відповідей отримано: {stats['responses']}")
+            llm_report.append(f"\nТОКЕНИ:")
+            llm_report.append(f"  Токенів надіслано: {stats['tokens_sent']:,}")
+            llm_report.append(f"  Токенів отримано: {stats['tokens_received']:,}")
+            llm_report.append(f"  Всього токенів: {stats['tokens']:,}")
+            llm_report.append(f"\nДЕТАЛІ:")
+            llm_report.append(f"  Повний лог запитів/відповідей: llm_full_log.json")
+            llm_report.append(f"  У логу збережено повні тексти відповідей (без обрізання)")
 
             (session.session_dir / "04_llm_stats.txt").write_text(
                 "\n".join(llm_report), encoding="utf-8"
@@ -942,8 +961,15 @@ def _create_session_reports(
         session_summary.append(f"  - 03_rename_plan.txt - план перейменування")
     if llm_client and llm_client.get_stats()["requests"] > 0:
         session_summary.append(f"  - 04_llm_stats.txt - статистика LLM")
+        session_summary.append(f"  - llm_full_log.json - повний лог LLM (включає необрізані відповіді)")
     session_summary.append(f"  - session_summary.txt - цей файл")
     session_summary.append(f"  - session_metadata.json - метадані сесії")
+
+    session_summary.append(f"\nОБМЕЖЕННЯ LLM:")
+    if llm_client:
+        session_summary.append(f"  - Вхідний текст: макс. {llm_client.MAX_INPUT_LENGTH} символів")
+        session_summary.append(f"  - Відображення в TUI: макс. {llm_client.MAX_OUTPUT_DISPLAY} символів")
+        session_summary.append(f"  - Повні відповіді збережено в llm_full_log.json")
 
     (session.session_dir / "session_summary.txt").write_text(
         "\n".join(session_summary), encoding="utf-8"
