@@ -85,6 +85,39 @@ class RunSummary:
 INVALID_SHEET_CHARS = re.compile(r'[\[\]:*?/\\]')
 MAX_SHEET_NAME_LENGTH = 31
 
+# Excel обмеження для вмісту клітинок
+MAX_CELL_LENGTH = 32767  # Максимальна довжина тексту в клітинці Excel
+# Контрольні символи, які Excel не підтримує (ASCII 0-31, крім TAB, LF, CR)
+EXCEL_INVALID_CHARS = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]')
+
+
+def sanitize_cell_value(value: any) -> any:
+    """
+    Санітизація значення для запису в клітинку Excel.
+
+    Excel не підтримує:
+    - Контрольні символи (ASCII 0-31, крім TAB, LF, CR)
+    - Текст довший за 32,767 символів
+
+    Args:
+        value: Будь-яке значення для запису в клітинку
+
+    Returns:
+        Очищене значення, безпечне для Excel
+    """
+    # Якщо не строка - повернути як є
+    if not isinstance(value, str):
+        return value
+
+    # Видалити недопустимі контрольні символи
+    cleaned = EXCEL_INVALID_CHARS.sub('', value)
+
+    # Обрізати до максимальної довжини
+    if len(cleaned) > MAX_CELL_LENGTH:
+        cleaned = cleaned[:MAX_CELL_LENGTH - 3] + "..."
+
+    return cleaned
+
 
 def normalize_sheet_name(name: str, used_names: Set[str] | None = None, fallback: str = "Sheet") -> str:
     """
@@ -152,6 +185,12 @@ def _dataframe(rows: Iterable[InventoryRow]) -> pd.DataFrame:
     df = pd.DataFrame([asdict(row) for row in rows])
     if df.empty:
         df = pd.DataFrame(columns=InventoryRow.__annotations__.keys())
+
+    # Санітизація всіх текстових колонок для Excel
+    for col in df.columns:
+        if df[col].dtype == 'object':  # object dtype зазвичай означає строки
+            df[col] = df[col].apply(sanitize_cell_value)
+
     return df
 
 
@@ -167,6 +206,11 @@ def write_inventory(rows: Iterable[InventoryRow], summary: RunSummary, run_dir: 
         "by_type": df.sort_values(by=["ext", "path_new"]),
     }
     summary_df = pd.DataFrame([asdict(summary)])
+
+    # Санітизація summary DataFrame
+    for col in summary_df.columns:
+        if summary_df[col].dtype == 'object':
+            summary_df[col] = summary_df[col].apply(sanitize_cell_value)
     xlsx_path = run_dir / "inventory.xlsx"
 
     # Трекінг використаних назв аркушів для уникнення конфліктів
@@ -254,5 +298,13 @@ def update_inventory_after_sort(
     write_inventory(rows, summary, run_dir)
 
 
-__all__ = ["InventoryRow", "RunSummary", "write_inventory", "read_inventory", "find_latest_run", "update_inventory_after_sort"]
+__all__ = [
+    "InventoryRow",
+    "RunSummary",
+    "write_inventory",
+    "read_inventory",
+    "find_latest_run",
+    "update_inventory_after_sort",
+    "sanitize_cell_value",
+]
 
