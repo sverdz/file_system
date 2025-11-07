@@ -136,7 +136,7 @@ class ProgressTracker:
     def _update_display_if_needed(self) -> None:
         """Оновити дисплей якщо пройшло достатньо часу."""
         if self.live and self.use_compact_view and self._should_update_display():
-            self._update_display_if_needed()
+            self.live.update(self._render_display())
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
