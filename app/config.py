@@ -69,8 +69,25 @@ class Config(BaseModel):
         return Path(self.root)
 
 
+def get_project_root() -> Path:
+    """Отримати кореневу директорію проекту."""
+    return Path(__file__).resolve().parents[1]
+
+
+def get_runs_dir() -> Path:
+    """Отримати директорію для зберігання запусків."""
+    return get_project_root() / "runs"
+
+
+def get_output_dir() -> Path:
+    """Отримати директорію для зберігання вихідних файлів (відсортованих, дублікатів тощо)."""
+    output_dir = get_project_root() / "_output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
 def config_locations() -> Dict[str, Path]:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = get_project_root()
     appdata = Path(os.environ.get("APPDATA", project_root / "runs" / "config"))
     return {
         "project": project_root / "runs" / "config.yaml",
@@ -182,5 +199,5 @@ def test_llm_connection(provider: str, api_key: str, model: str = "") -> tuple[b
         return False, f"✗ Помилка: {str(e)}"
 
 
-__all__ = ["Config", "load_config", "save_config", "test_llm_connection"]
+__all__ = ["Config", "load_config", "save_config", "test_llm_connection", "get_project_root", "get_runs_dir", "get_output_dir"]
 

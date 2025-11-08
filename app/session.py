@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.config import get_runs_dir
+
 
 @dataclass
 class SessionInfo:
@@ -30,14 +32,14 @@ class SessionManager:
     OPERATION_DEDUP = "DEDUP"
     OPERATION_ANALYZE = "ANALYZE"
 
-    def __init__(self, base_dir: Path = Path("runs")):
+    def __init__(self, base_dir: Path | None = None):
         """
         Ініціалізувати менеджер сесій.
 
         Args:
-            base_dir: Базова директорія для збереження всіх сесій
+            base_dir: Базова директорія для збереження всіх сесій (за замовчуванням project_root/runs)
         """
-        self.base_dir = base_dir
+        self.base_dir = base_dir if base_dir is not None else get_runs_dir()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def create_session(self, operation_type: str) -> SessionInfo:

@@ -9,6 +9,8 @@ from typing import Dict, Iterable, List, Set
 
 import pandas as pd
 
+from app.config import get_runs_dir
+
 
 @dataclass
 class InventoryRow:
@@ -244,7 +246,7 @@ def read_inventory(run_dir: Path) -> pd.DataFrame:
 
 def find_latest_run() -> Path | None:
     """Знайти останній запуск в папці runs."""
-    runs_dir = Path("runs")
+    runs_dir = get_runs_dir()
     if not runs_dir.exists():
         return None
 
