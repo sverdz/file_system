@@ -491,9 +491,9 @@ class LiveTUI:
                         traceback=error_details,
                     )
                     self.error_log.append(error_entry)
-                    self.error_log = self.error_log[-20:]  # Останні 20 помилок
+                    self.error_log = self.error_log[-100:]  # Останні 100 помилок
 
-            self.file_log = self.file_log[-50:]
+            self.file_log = self.file_log[-500:]  # Останні 500 файлів
             self.files_processed += 1
             self.current_file.reset()
             self._refresh()

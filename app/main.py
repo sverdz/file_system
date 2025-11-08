@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from app.classify import classify_text, summarize_text
-from app.config import Config, load_config, save_config, test_llm_connection
+from app.config import Config, load_config, save_config, test_llm_connection, get_runs_dir, get_output_dir
 from app.dedup import DuplicateGroup, detect_exact_duplicates
 from app.extract import ExtractionResult, extract_text
 from app.inventory import InventoryRow, RunSummary, write_inventory, find_latest_run, read_inventory, update_inventory_after_sort
@@ -292,7 +292,7 @@ def configure(cfg: Config) -> Config:
 
 
 def show_last_summary() -> None:
-    runs_dir = Path("runs")
+    runs_dir = get_runs_dir()
     if not runs_dir.exists():
         console.print(markup(THEME.warning, "Немає запусків."))
         return
@@ -344,7 +344,7 @@ def sort_and_organize(cfg: Config) -> None:
             # Сортування за категоріями
             console.print(markup(THEME.processing, "\nСортування за категоріями..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
-            mapping = sort_files(root, files_to_sort, "by_category", cfg.sorted_root)
+            mapping = sort_files(get_output_dir(), files_to_sort, "by_category", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
             console.print(format_status(f"Відсортовано {len(mapping)} файлів за категоріями", is_error=False))
 
@@ -352,7 +352,7 @@ def sort_and_organize(cfg: Config) -> None:
             # Сортування за датами
             console.print(markup(THEME.processing, "\nСортування за датами..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
-            mapping = sort_files(root, files_to_sort, "by_date", cfg.sorted_root)
+            mapping = sort_files(get_output_dir(), files_to_sort, "by_date", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
             console.print(format_status(f"Відсортовано {len(mapping)} файлів за датами", is_error=False))
 
@@ -360,7 +360,7 @@ def sort_and_organize(cfg: Config) -> None:
             # Сортування за типами
             console.print(markup(THEME.processing, "\nСортування за типами файлів..."))
             files_to_sort = [Path(row["path_final"]) for _, row in df.iterrows() if Path(row["path_final"]).exists()]
-            mapping = sort_files(root, files_to_sort, "by_type", cfg.sorted_root)
+            mapping = sort_files(get_output_dir(), files_to_sort, "by_type", cfg.sorted_root)
             file_updates = {str(k): str(v) for k, v in mapping.items()}
             console.print(format_status(f"Відсортовано {len(mapping)} файлів за типами", is_error=False))
 
@@ -404,7 +404,7 @@ def sort_and_organize(cfg: Config) -> None:
 def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
     start_time = datetime.now(timezone.utc)
     run_id = start_time.strftime("%Y%m%dT%H%M%S")
-    run_dir = Path("runs") / run_id
+    run_dir = get_runs_dir() / run_id
 
     try:
         setup_logging(run_dir)
@@ -870,7 +870,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 delete_duplicates(duplicates_flat)
                 deleted_set.update(duplicates_flat)
             else:
-                mapping = quarantine_files(root, duplicates_files_map)
+                mapping = quarantine_files(get_output_dir(), duplicates_files_map)
                 for original, new_path in mapping.items():
                     quarantine_updates[original] = str(new_path)
 
@@ -882,7 +882,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 for row in rows
                 if row.lifecycle_state == "present" and Path(row.path_new) not in excluded
             ]
-            sorted_mapping = sort_files(root, sortable_paths, sort_strategy, cfg.sorted_root)
+            sorted_mapping = sort_files(get_output_dir(), sortable_paths, sort_strategy, cfg.sorted_root)
             sorted_updates.update(sorted_mapping)
 
         if deleted_set or quarantine_updates:
