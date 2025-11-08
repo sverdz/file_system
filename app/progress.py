@@ -159,7 +159,7 @@ class ProgressTracker:
             for stage_name, stage_progress in self.stages.items():
                 stage_name_ua = self._translate_stage(stage_name)
                 task_id = self.progress.add_task(
-                    f"[cyan]{stage_name_ua}",
+                    f"[cyan]{stage_name_ua}[/cyan]",
                     total=1,
                     visible=True,
                     completed=0
