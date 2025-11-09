@@ -117,7 +117,8 @@ llm_provider: none
 max_filename_length: 20
 ocr_lang: ukr+eng
 rename_template: '{yyyy}-{mm}-{dd}_{category}{ext}'
-root: C:\Users\dsver\Downloads
+root: D:\OneDrive - Громадська організація Центр суспільного розвитку та ініціатив\ГО
+  Центр суспільного розвитку та ініціатив
 sorted_root: _sorted
 sorted_targets:
 - by_category
