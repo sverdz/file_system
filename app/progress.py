@@ -165,6 +165,7 @@ class ProgressTracker:
                 self._render_display(),
                 console=self.console,
                 refresh_per_second=10,  # 10 FPS для плавного оновлення
+                auto_refresh=True,  # ✅ Автоматичне оновлення таймера кожні 0.1 секунди
                 transient=False,
                 screen=False,  # Не використовувати alternate screen
             )
