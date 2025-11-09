@@ -583,19 +583,20 @@ class ProgressTracker:
         else:
             files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
-        # Компактний статус-бар в 1 рядок
+        # Компактний статус-бар в 1 рядок: відсотки + кількість + час + метрики
+        progress_percent = f"{overall_progress:.1f}%"
         if terminal_width < 80:
             # Компактний вигляд
-            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅{self.metrics.success_count} [{THEME.warning}]⚠️{self.metrics.duplicate_groups} [{THEME.error}]❌{self.metrics.error_count}[/]"
+            status_line = f"[{THEME.number_primary}]{progress_percent}[/] [{THEME.info}]({files_progress})[/] │ ⏱️ {elapsed_str} │ [{THEME.success}]✅{self.metrics.success_count}[/] [{THEME.warning}]⚠️{self.metrics.duplicate_groups}[/] [{THEME.error}]❌{self.metrics.error_count}[/]"
         else:
             # Повний вигляд в 1 рядок
             llm_part = ""
             if self.metrics.llm_requests > 0:
                 llm_part = f" │ [{THEME.llm_request}]🤖 {self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
-            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅ {self.metrics.success_count} │ [{THEME.warning}]⚠️ {self.metrics.duplicate_groups} │ [{THEME.error}]❌ {self.metrics.error_count}[/]{llm_part}"
+            status_line = f"[{THEME.number_primary}]{progress_percent}[/] [{THEME.info}]({files_progress})[/] │ ⏱️ {elapsed_str} │ [{THEME.success}]✅ {self.metrics.success_count}[/] │ [{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/] │ [{THEME.error}]❌ {self.metrics.error_count}[/]{llm_part}"
 
         header_panel = Panel(
-            Text(status_line, overflow="crop"),
+            Text.from_markup(status_line, overflow="crop"),
             title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
             padding=(0, 1),

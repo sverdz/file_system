@@ -646,15 +646,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             if not meta.should_process:
                 # Додати в file_contexts зі статусом "пропущено"
                 file_contexts[meta.path] = FileContext(
-                    path=meta.path,
-                    size=meta.size,
-                    modified_time=meta.mtime,
-                    extracted_text="",
-                    suggested_category="[службовий файл]",
-                    suggested_filename=meta.path.name,
-                    confidence_score=0.0,
-                    extraction_time=0.0,
-                    classification_time=0.0,
+                    meta=meta,
+                    text=ExtractionResult(text="", source="skipped", quality=0.0),
+                    classification={"category": "[службовий файл]"},
+                    summary="",
+                    category="[службовий файл]",
+                    date_doc=datetime.fromtimestamp(meta.mtime).date().isoformat(),
                 )
                 # Збільшити лічильник для правильного прогресу (без додавання в лог)
                 tracker.files_processed += 1
