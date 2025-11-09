@@ -149,19 +149,23 @@ class ProgressTracker:
     def _update_display_now(self) -> None:
         """Оновити дисплей ЗАВЖДИ (без throttling)."""
         if self.live and self.use_compact_view:
-            self.live.update(self._render_display())
+            try:
+                self.live.update(self._render_display(), refresh=True)
+            except Exception:
+                pass  # Ігнорувати помилки оновлення
 
     def update_scan_progress(self, files_found: int) -> None:
         """Оновити прогрес сканування (викликається для кожного знайденого файлу)."""
         self.files_scanned = files_found
         self.scanning_active = True
-        # Оновлюємо дисплей кожні 10 файлів АБО кожні 0.5 секунди
+        # Оновлюємо дисплей кожні 5 файлів АБО кожні 0.3 секунди
         current_time = time.time()
         time_since_update = current_time - getattr(self, '_last_scan_update', 0)
 
-        if files_found % 10 == 0 or time_since_update >= 0.5:
+        if files_found % 5 == 0 or time_since_update >= 0.3:
             self._last_scan_update = current_time
-            self._update_display_now()
+            if self.live:
+                self._update_display_now()
 
     def finish_scan(self, total_files: int) -> None:
         """Завершити сканування і встановити загальну кількість файлів."""
@@ -190,21 +194,18 @@ class ProgressTracker:
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
         if self.use_compact_view:
-            # Запустити Live display (БЕЗ auto_refresh - використовуємо свій thread)
+            # Запустити Live display з високим refresh rate
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=4,  # Максимум 4 FPS для ручного оновлення
-                auto_refresh=False,  # ❌ ВИМКНЕНО - використовуємо окремий thread
+                refresh_per_second=2,  # 2 рази на секунду
+                auto_refresh=False,  # ВИМКНЕНО - оновлюємо вручну
                 transient=False,
                 screen=False,  # Не використовувати alternate screen
             )
             self.live.start()
-
-            # Запустити окремий потік для оновлення таймера кожну секунду
-            self._stop_refresh.clear()
-            self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
-            self._refresh_thread.start()
+            # Примусово оновити після старту
+            self._update_display_now()
         else:
             # Старий вигляд: окремі етапи
             self.progress = Progress(
