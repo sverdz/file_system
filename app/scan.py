@@ -35,7 +35,17 @@ def to_long_path(path: Path) -> Path:
 
 
 def scan_directory(root: Path) -> List[FileMeta]:
-    results: List[FileMeta] = []
+    """Сканувати директорію і повернути список файлів. Використовує scan_directory_progressive."""
+    return list(scan_directory_progressive(root))
+
+
+def scan_directory_progressive(root: Path) -> Iterator[FileMeta]:
+    """
+    Сканувати директорію з прогресивним yield для відображення прогресу.
+
+    Yields:
+        FileMeta: Метадані кожного знайденого файлу по одному
+    """
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
             path = Path(dirpath) / name
@@ -43,8 +53,7 @@ def scan_directory(root: Path) -> List[FileMeta]:
                 stat = path.stat()
             except OSError:
                 continue
-            results.append(FileMeta(path=path, size=stat.st_size, ctime=stat.st_ctime, mtime=stat.st_mtime))
-    return results
+            yield FileMeta(path=path, size=stat.st_size, ctime=stat.st_ctime, mtime=stat.st_mtime)
 
 
 def compute_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:

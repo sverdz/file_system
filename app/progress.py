@@ -115,18 +115,47 @@ class ProgressTracker:
 
         # Хакерський інтерфейс
         self.scan_dir = scan_dir  # Поточна папка сканування
-        self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів
-        self.file_queue: List[QueuedFile] = []  # Черга файлів (ТІЛЬКИ наступні 5!)
+        self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів (ВИМКНЕНО)
+        self.file_queue: List[QueuedFile] = []  # Черга файлів (ВИМКНЕНО)
         self.all_files: List[str] = []  # ВСІ файли для обробки
         self.current_file_index: int = 0  # Поточний індекс в all_files
         self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
         self.files_processed: int = 0  # Скільки файлів оброблено
         self.total_files: int = 0  # Загальна кількість файлів
+        self.files_scanned: int = 0  # Скільки файлів знайдено під час сканування
+        self.scanning_active: bool = False  # Чи триває сканування
+
+        # Прогрес поточного файлу (для детального відображення)
+        self.current_stage_progress: Dict[str, Dict[str, float]] = {}  # {"dedup": {"progress": 0.5, "time": 1.2}}
 
     def _update_display_now(self) -> None:
         """Оновити дисплей ЗАВЖДИ (без throttling)."""
         if self.live and self.use_compact_view:
             self.live.update(self._render_display())
+
+    def update_scan_progress(self, files_found: int) -> None:
+        """Оновити прогрес сканування (викликається для кожного знайденого файлу)."""
+        self.files_scanned = files_found
+        self.scanning_active = True
+        # Оновлюємо дисплей кожні 10 файлів АБО кожні 0.5 секунди
+        current_time = time.time()
+        time_since_update = current_time - getattr(self, '_last_scan_update', 0)
+
+        if files_found % 10 == 0 or time_since_update >= 0.5:
+            self._last_scan_update = current_time
+            self._update_display_now()
+
+    def finish_scan(self, total_files: int) -> None:
+        """Завершити сканування і встановити загальну кількість файлів."""
+        self.scanning_active = False
+        self.total_files = total_files
+        self.files_scanned = total_files
+        self._update_display_now()
+
+    def update_stage_progress(self, stage: str, progress: float, elapsed_time: float) -> None:
+        """Оновити прогрес конкретного етапу для поточного файлу."""
+        self.current_stage_progress[stage] = {"progress": progress, "time": elapsed_time}
+        self._update_display_now()
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
@@ -408,8 +437,68 @@ class ProgressTracker:
         # Оновити чергу (показати наступні 5)
         self._update_queue()
 
+    def _render_detailed_current_file(self) -> List[Text]:
+        """Відрендерити детальний вигляд поточного файлу з прогрес-барами."""
+        lines = []
+
+        # Заголовок файлу
+        file_icon = "⚙️" if self.current_file.status == "processing" else "✅" if self.current_file.status == "success" else "❌"
+        timestamp = time.strftime("%H:%M:%S")
+        header = f"[{file_icon}][{timestamp}][{self.current_file.hex_id}] {self.current_file.name}"
+        lines.append(Text.from_markup(header))
+
+        # Метадані файлу
+        if self.current_file.size > 0:
+            size_str = format_file_size(self.current_file.size)
+            date_str = format_date(self.current_file.modified_time) if self.current_file.modified_time else "—"
+            sha_preview = self.current_file.sha_hash[:6] if self.current_file.sha_hash else "—"
+            meta_line = f"├─ 📏 {size_str} │ 📅 {date_str} │ 🔒 SHA-256: {sha_preview}..."
+            lines.append(Text.from_markup(meta_line))
+
+        # Прогрес-бари для кожного етапу
+        stages_order = ["dedup", "extract", "classify", "rename"]
+        stage_icons = {
+            "dedup": "🔍 Duplicate scan",
+            "extract": "📝 Text extract  ",
+            "classify": "🤖 LLM classify  ",
+            "rename": "✏️  Rename file   ",
+        }
+
+        for stage in stages_order:
+            stage_data = self.current_stage_progress.get(stage)
+            if stage_data:
+                progress = stage_data.get("progress", 0.0)
+                elapsed = stage_data.get("time", 0.0)
+
+                # Прогрес-бар (20 символів)
+                filled = int(progress * 20)
+                bar = "█" * filled + "░" * (20 - filled)
+
+                percent = int(progress * 100)
+                time_str = f"{elapsed:.2f}s" if progress >= 1.0 else f"{elapsed:.2f}s..."
+
+                icon = stage_icons.get(stage, f"{stage}")
+                stage_line = f"├─ {icon} {bar} {percent:3d}% [{time_str}]"
+                lines.append(Text.from_markup(stage_line))
+            elif self.current_file.stage == stage:
+                # Поточний етап але без даних - показуємо що чекаємо
+                icon = stage_icons.get(stage, f"{stage}")
+                bar = "░" * 20
+                stage_line = f"├─ {icon} {bar}   0% [waiting...]"
+                lines.append(Text.from_markup(stage_line))
+
+        # Категорія якщо є
+        if self.current_file.category:
+            lines.append(Text.from_markup(f"└─ 🏷️  CATEGORY: {self.current_file.category}"))
+
+        # Помилка якщо є
+        if self.current_file.error_msg:
+            lines.append(Text.from_markup(f"└─ ❌ ERROR: {self.current_file.error_msg}", style=THEME.error))
+
+        return lines
+
     def _render_display(self) -> Group:
-        """Відрендерити хакерський дисплей з файлами."""
+        """Відрендерити спрощений дисплей БЕЗ LOG та QUEUE."""
         components = []
 
         # ═══════════════════════════════════════════════════════════
@@ -422,8 +511,11 @@ class ProgressTracker:
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
-        # Використовуємо files_processed замість суми stages
-        files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
+        # Під час сканування показуємо кількість знайдених файлів
+        if self.scanning_active:
+            files_progress = f"Scanning... {self.files_scanned} files found"
+        else:
+            files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
         header_table = Table.grid(padding=(0, 2))
         header_table.add_row(
@@ -432,7 +524,6 @@ class ProgressTracker:
             f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
             f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
             f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
-            f"[{THEME.dim_text}]⏳ [{THEME.number_primary}]{len(self.file_queue)}[/]",
         )
 
         llm_stats = ""
@@ -447,59 +538,18 @@ class ProgressTracker:
         components.append(header_panel)
 
         # ═══════════════════════════════════════════════════════════
-        # PROCESSING LOG: Останні 10 файлів
-        # ═══════════════════════════════════════════════════════════
-        if self.file_log:
-            log_lines = []
-            # Показати останні 10 файлів
-            for entry in self.file_log[-10:]:
-                entry_lines = render_file_log_entry(entry, show_details=True)
-                for line in entry_lines:
-                    log_lines.append(Text.from_markup(line))
-                log_lines.append(Text(""))  # Порожній рядок між файлами
-
-            log_panel = Panel(
-                Group(*log_lines) if log_lines else Text("Очікування файлів...", style="dim"),
-                title=f"[{THEME.header}]📜 PROCESSING LOG[/]",
-                border_style=THEME.decoration,
-                padding=(0, 1),
-            )
-            components.append(log_panel)
-
-        # ═══════════════════════════════════════════════════════════
-        # CURRENTLY PROCESSING: Поточний файл
+        # CURRENTLY PROCESSING: Поточний файл (ДЕТАЛЬНО З ПРОГРЕС-БАРАМИ)
         # ═══════════════════════════════════════════════════════════
         if self.current_file.name:
-            # Зібрати прогрес по етапах
-            stages_progress = {}
-            for stage_name, sp in self.stages.items():
-                stages_progress[stage_name] = (sp.completed, sp.total)
-
-            current_lines = render_current_file(self.current_file, stages_progress)
-            current_texts = [Text.from_markup(line) for line in current_lines]
+            current_lines = self._render_detailed_current_file()
 
             current_panel = Panel(
-                Group(*current_texts),
+                Group(*current_lines) if current_lines else Text("Очікування файлів...", style="dim"),
                 title=f"[{THEME.processing}]⚙️  CURRENTLY PROCESSING[/]",
                 border_style=THEME.processing,
                 padding=(0, 1),
             )
             components.append(current_panel)
-
-        # ═══════════════════════════════════════════════════════════
-        # QUEUE: Наступні 5 файлів
-        # ═══════════════════════════════════════════════════════════
-        if self.file_queue:
-            queue_lines = render_queue(self.file_queue)
-            queue_texts = [Text.from_markup(line) for line in queue_lines]
-
-            queue_panel = Panel(
-                Group(*queue_texts) if queue_texts else Text("Черга порожня", style="dim"),
-                title=f"[{THEME.dim_text}]⏳ QUEUE (next 5 files)[/]",
-                border_style=THEME.separator,
-                padding=(0, 1),
-            )
-            components.append(queue_panel)
 
         # ═══════════════════════════════════════════════════════════
         # FOOTER: Детальна статистика

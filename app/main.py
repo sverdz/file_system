@@ -27,7 +27,7 @@ from app.llm_client import LLMClient
 from app.loggingx import log_event, log_readable, setup_logging
 from app.progress import ProgressTracker
 from app.rename import plan_renames
-from app.scan import FileMeta, ensure_hash, scan_directory
+from app.scan import FileMeta, ensure_hash, scan_directory, scan_directory_progressive
 from app.sortout import delete_duplicates, quarantine_files, sort_files, flatten_directory
 from app.theme import THEME, markup, format_number, format_status, format_error, header_line
 
@@ -468,8 +468,13 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                     markup(THEME.warning, "⚠ LLM увімкнено але API ключ не налаштовано")
                 )
 
+        # Прогресивне сканування з оновленням дисплею в реальному часі
+        metas = []
         try:
-            metas = scan_directory(root)
+            for idx, meta in enumerate(scan_directory_progressive(root), 1):
+                metas.append(meta)
+                # Оновити прогрес сканування кожні 10 файлів
+                tracker.update_scan_progress(idx)
         except Exception as exc:
             tracker.stop_visual()
             console.print(format_error(f"Помилка сканування: {exc}"))
@@ -480,15 +485,18 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             console.print(markup(THEME.warning, "Попередження: Не знайдено файлів для обробки"))
             return
 
+        # Завершити сканування
+        tracker.finish_scan(len(metas))
+
         # Після сканування встановлюємо total для всіх етапів
         tracker.set_all_totals(len(metas))
         tracker.set_stage_total("scan", len(metas))
         tracker.increment("scan", len(metas))
         tracker.update_description("scan", f"Знайдено {len(metas)} файлів")
 
-        # Заповнити чергу файлів для хакерського інтерфейсу
-        file_paths = [str(meta.path) for meta in metas]
-        tracker.populate_queue(file_paths)
+        # ВИМКНЕНО: Заповнити чергу файлів для хакерського інтерфейсу
+        # file_paths = [str(meta.path) for meta in metas]
+        # tracker.populate_queue(file_paths)
 
         update_progress(run_dir, tracker)
 
@@ -512,8 +520,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         tracker.set_stage_total("extract", len(metas))
         error_count = 0
         for idx, meta in enumerate(metas, 1):
-            # Видалити з черги
-            tracker.remove_from_queue(meta.path.name)
+            # ВИМКНЕНО: Видалити з черги (черга вимкнена)
+            # tracker.remove_from_queue(meta.path.name)
 
             # Встановити поточний файл
             tracker.set_current_file(
