@@ -623,7 +623,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         )
 
         tracker.update_description("dedup", "Аналіз дублікатів...")
-        exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas_to_process) if cfg.dedup.exact else []
+        exact_groups: List[DuplicateGroup] = []
+        try:
+            if cfg.dedup.exact:
+                exact_groups = detect_exact_duplicates(metas_to_process)
+        except Exception as exc:
+            tracker.add_error("Аналіз дублікатів", f"Помилка аналізу дублікатів: {exc}")
 
         # Підрахунок файлів-дублікатів
         duplicate_files_count = sum(len(group.files) - 1 for group in exact_groups)
@@ -677,7 +682,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             # Засікти час початку обробки (уникати перезапису глобального start_time)
             file_start_time = time.time()
             try:
-                ensure_hash(meta)
+                # Хешування може не вдатись - обробляємо помилку
+                try:
+                    ensure_hash(meta)
+                except Exception as hash_exc:
+                    tracker.add_error(meta.path.name, f"Помилка хешування: {hash_exc}")
+                    meta.sha256 = None  # Продовжуємо без хешу
 
                 # Етап 1: Вилучення тексту
                 result = extract_text(meta, cfg.ocr_lang)
@@ -738,10 +748,11 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 # Use fallback values if extraction fails
                 error_count += 1
                 error_msg = f"Не вдалося обробити: {exc}"
-                console.print(markup(THEME.warning, f"⚠ {error_msg}"))
+                # НЕ виводимо в консоль під час обробки - щоб не псувати візуал
+                # console.print(markup(THEME.warning, f"⚠ {error_msg}"))
                 extract_time = time.time() - file_start_time
 
-                # Додати помилку до трекера
+                # Додати помилку до трекера (буде показано в кінці)
                 tracker.add_error(meta.path.name, str(exc))
 
                 # Оновити статус помилки (БЕЗ зміни path!)
