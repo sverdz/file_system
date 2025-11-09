@@ -179,12 +179,12 @@ class ProgressTracker:
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
         if self.use_compact_view:
-            # Запустити Live display з високим refresh rate
+            # Запустити Live display з автоматичним оновленням для таймера
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=2,  # 2 рази на секунду
-                auto_refresh=False,  # ВИМКНЕНО - оновлюємо вручну
+                refresh_per_second=1,  # 1 раз на секунду для таймера
+                auto_refresh=True,  # ✅ Автоматичне оновлення для таймера
                 transient=False,
                 screen=False,  # Не використовувати alternate screen
             )
