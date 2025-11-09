@@ -28,6 +28,55 @@ DEFAULT_CATEGORY_MAP = [
     "інше",
 ]
 
+# Виключення - папки та файли, які ігноруються при скануванні
+DEFAULT_EXCLUDE_DIRS = [
+    # Системи контролю версій
+    ".git", ".svn", ".hg",
+    # Залежності
+    "node_modules", "vendor",
+    # Python
+    "venv", ".venv", "env", "virtualenv", "__pycache__", ".pytest_cache",
+    # IDE
+    ".idea", ".vscode", ".vs",
+    # Збірка
+    "dist", "build", "target", "out", "bin", "obj",
+    # Службові папки програми
+    "duplicates", "_duplicates", "_sorted", "_output", "_near_duplicates", "runs",
+]
+
+DEFAULT_EXCLUDE_FILES = [
+    # Системні файли
+    ".DS_Store", "Thumbs.db", "desktop.ini",
+    # Python скомпільовані
+    "*.pyc", "*.pyo", "*.pyd",
+    # Бібліотеки
+    "*.dll", "*.so", "*.dylib",
+    # Виконувані
+    "*.exe", "*.bin", "*.app",
+    # Тимчасові
+    "*.log", "*.tmp", "*.temp", "*.cache",
+    # Git конфігурація
+    ".gitignore", ".gitattributes", ".editorconfig",
+    # Lock файли
+    "package-lock.json", "yarn.lock", "composer.lock", "Pipfile.lock",
+    # Мінімізовані
+    "*.min.js", "*.min.css",
+]
+
+DEFAULT_INCLUDE_EXTENSIONS = [
+    # Документи
+    ".pdf", ".doc", ".docx", ".odt",
+    ".xls", ".xlsx", ".ods", ".csv",
+    ".ppt", ".pptx", ".odp",
+    ".txt", ".md", ".rtf",
+    # Зображення
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".svg", ".ico",
+    # Архіви
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    # Інші
+    ".json", ".xml", ".yaml", ".yml", ".html", ".htm",
+]
+
 
 class DuplicatePolicy(BaseModel):
     exact: str = Field(default="quarantine", pattern=r"^(quarantine|delete_to_trash)$")
@@ -64,6 +113,12 @@ class Config(BaseModel):
     llm_model: str = ""  # Наприклад: "claude-3-sonnet-20240229" або "gpt-4"
     threads: int = 0
 
+    # Фільтри для сканування
+    exclude_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_EXCLUDE_DIRS))
+    exclude_files: list[str] = Field(default_factory=lambda: list(DEFAULT_EXCLUDE_FILES))
+    include_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_INCLUDE_EXTENSIONS))
+    use_extension_filter: bool = True  # Використовувати фільтр розширень (якщо False - обробляти всі)
+
     @property
     def root_path(self) -> Path:
         return Path(self.root)
@@ -87,11 +142,10 @@ def get_output_dir() -> Path:
 
 
 def config_locations() -> Dict[str, Path]:
+    """Отримати шляхи до конфігураційних файлів. Всі конфіги зберігаються в папці проекту."""
     project_root = get_project_root()
-    appdata = Path(os.environ.get("APPDATA", project_root / "runs" / "config"))
     return {
-        "project": project_root / "runs" / "config.yaml",
-        "appdata": appdata / "FileInventoryTool" / "config.yaml",
+        "project": project_root / "config.yaml",  # Конфігурація в корені проекту
     }
 
 

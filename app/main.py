@@ -575,7 +575,16 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
         # Прогресивне сканування з оновленням дисплею в реальному часі
         metas = []
         try:
-            for idx, meta in enumerate(scan_directory_progressive(root), 1):
+            for idx, meta in enumerate(
+                scan_directory_progressive(
+                    root,
+                    exclude_dirs=cfg.exclude_dirs,
+                    exclude_files=cfg.exclude_files,
+                    include_extensions=cfg.include_extensions,
+                    use_extension_filter=cfg.use_extension_filter,
+                ),
+                1,
+            ):
                 metas.append(meta)
                 # Оновити прогрес сканування кожні 10 файлів
                 tracker.update_scan_progress(idx)
@@ -604,8 +613,17 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
 
         update_progress(run_dir, tracker)
 
+        # Фільтрувати файли для обробки (тільки ті що should_process = True)
+        metas_to_process = [m for m in metas if m.should_process]
+        console.print(
+            format_status(
+                f"Знайдено {len(metas)} файлів, до обробки: {len(metas_to_process)} (пропущено службових: {len(metas) - len(metas_to_process)})",
+                is_error=False,
+            )
+        )
+
         tracker.update_description("dedup", "Аналіз дублікатів...")
-        exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas) if cfg.dedup.exact else []
+        exact_groups: List[DuplicateGroup] = detect_exact_duplicates(metas_to_process) if cfg.dedup.exact else []
 
         # Підрахунок файлів-дублікатів
         duplicate_files_count = sum(len(group.files) - 1 for group in exact_groups)
@@ -616,14 +634,30 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             duplicate_files=duplicate_files_count
         )
 
-        tracker.increment("dedup", len(metas))
+        tracker.increment("dedup", len(metas_to_process))
         tracker.update_description("dedup", f"Знайдено {len(exact_groups)} груп дублікатів")
         update_progress(run_dir, tracker)
 
         file_contexts: Dict[Path, FileContext] = {}
-        tracker.set_stage_total("extract", len(metas))
+        tracker.set_stage_total("extract", len(metas_to_process))
         error_count = 0
         for idx, meta in enumerate(metas, 1):
+            # Пропустити службові файли (не обробляти, але додати в інвентаризацію)
+            if not meta.should_process:
+                # Додати в file_contexts зі статусом "пропущено"
+                file_contexts[meta.path] = FileContext(
+                    path=meta.path,
+                    size=meta.size,
+                    modified_time=meta.mtime,
+                    extracted_text="",
+                    suggested_category="[службовий файл]",
+                    suggested_filename=meta.path.name,
+                    confidence_score=0.0,
+                    extraction_time=0.0,
+                    classification_time=0.0,
+                )
+                continue
+
             # ВИМКНЕНО: Видалити з черги (черга вимкнена)
             # tracker.remove_from_queue(meta.path.name)
 
@@ -635,7 +669,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 status="processing",
             )
 
-            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
+            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas_to_process)})")
 
             # Засікти час початку обробки (уникати перезапису глобального start_time)
             file_start_time = time.time()
