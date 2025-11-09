@@ -523,7 +523,7 @@ class LiveTUI:
                 error_details=error_details,
             )
             self.file_log.append(log_entry)
-            self.file_log = self.file_log[-50:]
+            self.file_log = self.file_log[-500:]  # Останні 500 файлів
             self._refresh()
 
     def add_error(self, filename: str, stage: str, error_message: str, traceback: str = "") -> None:
