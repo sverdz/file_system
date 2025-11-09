@@ -1,0 +1,131 @@
+category_map:
+- договір
+- рахунок
+- акт
+- протокол
+- лист
+- наказ
+- звіт
+- кошторис
+- тендер
+- презентація
+- довідка
+- ТЗ
+- специфікація
+- інше
+dedup:
+  exact: true
+  near: false
+  near_threshold: 0.85
+duplicates_policy:
+  exact: quarantine
+  near: quarantine
+exclude_dirs:
+- .git
+- .svn
+- .hg
+- node_modules
+- vendor
+- venv
+- .venv
+- env
+- virtualenv
+- __pycache__
+- .pytest_cache
+- .idea
+- .vscode
+- .vs
+- dist
+- build
+- target
+- out
+- bin
+- obj
+- duplicates
+- _duplicates
+- _sorted
+- _output
+- _near_duplicates
+- runs
+exclude_files:
+- .DS_Store
+- Thumbs.db
+- desktop.ini
+- '*.pyc'
+- '*.pyo'
+- '*.pyd'
+- '*.dll'
+- '*.so'
+- '*.dylib'
+- '*.exe'
+- '*.bin'
+- '*.app'
+- '*.log'
+- '*.tmp'
+- '*.temp'
+- '*.cache'
+- .gitignore
+- .gitattributes
+- .editorconfig
+- package-lock.json
+- yarn.lock
+- composer.lock
+- Pipfile.lock
+- '*.min.js'
+- '*.min.css'
+export_mode: prompt
+include_extensions:
+- .pdf
+- .doc
+- .docx
+- .odt
+- .xls
+- .xlsx
+- .ods
+- .csv
+- .ppt
+- .pptx
+- .odp
+- .txt
+- .md
+- .rtf
+- .jpg
+- .jpeg
+- .png
+- .gif
+- .bmp
+- .tiff
+- .webp
+- .svg
+- .ico
+- .zip
+- .rar
+- .7z
+- .tar
+- .gz
+- .json
+- .xml
+- .yaml
+- .yml
+- .html
+- .htm
+llm_api_key_claude: ''
+llm_api_key_openai: ''
+llm_enabled: false
+llm_model: ''
+llm_provider: none
+max_filename_length: 20
+ocr_lang: ukr+eng
+rename_template: '{yyyy}-{mm}-{dd}_{category}{ext}'
+root: D:\OneDrive - Громадська організація Центр суспільного розвитку та ініціатив\ГО
+  Центр суспільного розвитку та ініціатив
+sorted_root: _sorted
+sorted_targets:
+- by_category
+- by_date
+- by_type
+threads: 0
+use_extension_filter: true
+use_short_date: false
+use_short_format: true
+version: '1.0'
