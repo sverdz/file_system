@@ -600,6 +600,9 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 console.print(markup(THEME.warning, f"⚠ {error_msg}"))
                 extract_time = time.time() - file_start_time
 
+                # Додати помилку до трекера
+                tracker.add_error(meta.path.name, str(exc))
+
                 # Оновити статус помилки (БЕЗ зміни path!)
                 tracker.set_current_file(
                     name=meta.path.name,
@@ -955,6 +958,10 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
             write_inventory(rows, summary, run_dir)
             update_progress(run_dir, tracker)
             tracker.stop_visual()
+
+            # ✅ Звіт по помилках
+            tracker.print_error_report()
+
             console.print(format_status(f"\nЗавершено. Дані у {run_dir}", is_error=False))
             console.print(f"{markup(THEME.header, 'Оброблено файлів:')} {format_number(summary.files_processed)}")
             console.print(f"{markup(THEME.header, 'Перейменовано:')} {format_number(summary.renamed_ok)}")

@@ -128,6 +128,9 @@ class ProgressTracker:
         # Прогрес поточного файлу (для детального відображення)
         self.current_stage_progress: Dict[str, Dict[str, float]] = {}  # {"dedup": {"progress": 0.5, "time": 1.2}}
 
+        # Список помилок
+        self.error_list: List[Dict[str, str]] = []  # [{"file": "file.txt", "error": "помилка", "time": "12:34:56"}]
+
     def _update_display_now(self) -> None:
         """Оновити дисплей ЗАВЖДИ (без throttling)."""
         if self.live and self.use_compact_view:
@@ -156,6 +159,18 @@ class ProgressTracker:
         """Оновити прогрес конкретного етапу для поточного файлу."""
         self.current_stage_progress[stage] = {"progress": progress, "time": elapsed_time}
         self._update_display_now()
+
+    def add_error(self, file_name: str, error_message: str) -> None:
+        """Додати помилку до списку помилок."""
+        timestamp = time.strftime("%H:%M:%S")
+        self.error_list.append({
+            "file": file_name,
+            "error": error_message,
+            "time": timestamp,
+        })
+        # Зберігати тільки останні 100 помилок
+        if len(self.error_list) > 100:
+            self.error_list = self.error_list[-100:]
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
@@ -533,6 +548,25 @@ class ProgressTracker:
             logo = render_ascii_logo(self.scan_dir or "/")
             components.append(logo)
 
+        # ═══════════════════════════════════════════════════════════
+        # ЗАГАЛЬНИЙ ПРОГРЕС-БАР
+        # ═══════════════════════════════════════════════════════════
+        overall_progress = self.percentage() / 100.0  # Від 0.0 до 1.0
+        progress_bar_width = int(terminal_width * 0.90) - 30  # Залишаємо місце для тексту
+        filled = int(overall_progress * progress_bar_width)
+        bar = "█" * filled + "░" * (progress_bar_width - filled)
+
+        progress_text = f"[{THEME.info}]ЗАГАЛЬНИЙ ПРОГРЕС: [{bar}] {overall_progress*100:.1f}% ({self.files_processed}/{self.total_files} files)[/]"
+
+        progress_panel = Panel(
+            Text(progress_text, overflow="crop"),
+            border_style=THEME.success if overall_progress >= 1.0 else THEME.info,
+            padding=(0, 0),
+            expand=False,
+            width=int(terminal_width * 0.95),
+        )
+        components.append(progress_panel)
+
         # Статистика в хедері
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
@@ -543,40 +577,23 @@ class ProgressTracker:
         else:
             files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
-        # Адаптивна таблиця статистики
-        header_table = Table.grid(padding=(0, 1))
-
-        # Якщо ширина мала - показуємо тільки основні метрики
+        # Компактний статус-бар в 1 рядок
         if terminal_width < 80:
-            header_table.add_row(
-                f"[{THEME.info}]📊 {files_progress}[/]",
-                f"[{THEME.info}]⏱️ {elapsed_str}[/]",
-            )
-            header_table.add_row(
-                f"[{THEME.success}]✅ {self.metrics.success_count}[/]",
-                f"[{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/]",
-                f"[{THEME.error}]❌ {self.metrics.error_count}[/]",
-            )
+            # Компактний вигляд
+            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅{self.metrics.success_count} [{THEME.warning}]⚠️{self.metrics.duplicate_groups} [{THEME.error}]❌{self.metrics.error_count}[/]"
         else:
-            # Повний вигляд для широких терміналів
-            header_table.add_row(
-                f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
-                f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
-                f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
-                f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
-                f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
-            )
-
-        llm_stats = ""
-        if self.metrics.llm_requests > 0 and terminal_width >= 80:
-            llm_stats = f"  │  [{THEME.llm_request}]🤖 LLM: [{THEME.number_primary}]{self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
+            # Повний вигляд в 1 рядок
+            llm_part = ""
+            if self.metrics.llm_requests > 0:
+                llm_part = f" │ [{THEME.llm_request}]🤖 {self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
+            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅ {self.metrics.success_count} │ [{THEME.warning}]⚠️ {self.metrics.duplicate_groups} │ [{THEME.error}]❌ {self.metrics.error_count}[/]{llm_part}"
 
         header_panel = Panel(
-            Group(header_table, Text(llm_stats, overflow="crop")),
+            Text(status_line, overflow="crop"),
             border_style=THEME.border,
-            padding=(0, 1),
+            padding=(0, 0),  # Без padding для компактності
             expand=False,
-            width=min(terminal_width, 120),  # Максимум 120 символів
+            width=int(terminal_width * 0.95),  # 95% від ширини терміналу
         )
         components.append(header_panel)
 
@@ -592,7 +609,7 @@ class ProgressTracker:
                 border_style=THEME.processing,
                 padding=(0, 1),
                 expand=False,
-                width=min(terminal_width, 120),
+                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
             )
             components.append(current_panel)
 
@@ -641,7 +658,7 @@ class ProgressTracker:
                 border_style=THEME.border,
                 padding=(0, 1),
                 expand=False,
-                width=min(terminal_width, 120),
+                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
             )
             components.append(footer_panel)
 
@@ -677,4 +694,36 @@ class ProgressTracker:
             }
             for stage, sp in self.stages.items()
         }
+
+    def print_error_report(self) -> None:
+        """Надрукувати звіт по помилках в кінці."""
+        if not self.error_list:
+            return
+
+        from rich.table import Table
+        from rich.panel import Panel
+
+        console = Console()
+        console.print(f"\n{markup(THEME.error, '═══ ЗВІТ ПО ПОМИЛКАХ ═══')}\n")
+
+        error_table = Table(show_header=True, header_style=THEME.header, show_lines=True, border_style=THEME.error)
+        error_table.add_column("Час", style=THEME.dim_text, width=10)
+        error_table.add_column("Файл", style=THEME.file_name, max_width=50)
+        error_table.add_column("Помилка", style=THEME.error, max_width=60)
+
+        for error in self.error_list:
+            error_table.add_row(
+                error["time"],
+                error["file"],
+                error["error"]
+            )
+
+        panel = Panel(
+            error_table,
+            title=f"[{THEME.error}]❌ Помилки обробки ({len(self.error_list)} файлів)[/]",
+            border_style=THEME.error,
+            padding=(1, 2),
+        )
+        console.print(panel)
+        console.print()
 
