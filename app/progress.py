@@ -115,18 +115,47 @@ class ProgressTracker:
 
         # Хакерський інтерфейс
         self.scan_dir = scan_dir  # Поточна папка сканування
-        self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів
-        self.file_queue: List[QueuedFile] = []  # Черга файлів (ТІЛЬКИ наступні 5!)
+        self.file_log: List[FileLogEntry] = []  # Історія оброблених файлів (ВИМКНЕНО)
+        self.file_queue: List[QueuedFile] = []  # Черга файлів (ВИМКНЕНО)
         self.all_files: List[str] = []  # ВСІ файли для обробки
         self.current_file_index: int = 0  # Поточний індекс в all_files
         self.hex_counter = 0x7F8A  # Лічильник для генерації hex адрес
         self.files_processed: int = 0  # Скільки файлів оброблено
         self.total_files: int = 0  # Загальна кількість файлів
+        self.files_scanned: int = 0  # Скільки файлів знайдено під час сканування
+        self.scanning_active: bool = False  # Чи триває сканування
+
+        # Прогрес поточного файлу (для детального відображення)
+        self.current_stage_progress: Dict[str, Dict[str, float]] = {}  # {"dedup": {"progress": 0.5, "time": 1.2}}
 
     def _update_display_now(self) -> None:
         """Оновити дисплей ЗАВЖДИ (без throttling)."""
         if self.live and self.use_compact_view:
             self.live.update(self._render_display())
+
+    def update_scan_progress(self, files_found: int) -> None:
+        """Оновити прогрес сканування (викликається для кожного знайденого файлу)."""
+        self.files_scanned = files_found
+        self.scanning_active = True
+        # Оновлюємо дисплей кожні 10 файлів АБО кожні 0.5 секунди
+        current_time = time.time()
+        time_since_update = current_time - getattr(self, '_last_scan_update', 0)
+
+        if files_found % 10 == 0 or time_since_update >= 0.5:
+            self._last_scan_update = current_time
+            self._update_display_now()
+
+    def finish_scan(self, total_files: int) -> None:
+        """Завершити сканування і встановити загальну кількість файлів."""
+        self.scanning_active = False
+        self.total_files = total_files
+        self.files_scanned = total_files
+        self._update_display_now()
+
+    def update_stage_progress(self, stage: str, progress: float, elapsed_time: float) -> None:
+        """Оновити прогрес конкретного етапу для поточного файлу."""
+        self.current_stage_progress[stage] = {"progress": progress, "time": elapsed_time}
+        self._update_display_now()
 
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
@@ -135,8 +164,9 @@ class ProgressTracker:
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=4,  # 4 FPS для плавного таймера
-                transient=False
+                refresh_per_second=10,  # 10 FPS для плавного оновлення
+                transient=False,
+                screen=False,  # Не використовувати alternate screen
             )
             self.live.start()
         else:
@@ -408,125 +438,211 @@ class ProgressTracker:
         # Оновити чергу (показати наступні 5)
         self._update_queue()
 
+    def _render_detailed_current_file(self) -> List[Text]:
+        """Відрендерити детальний вигляд поточного файлу з прогрес-барами."""
+        lines = []
+
+        # Отримати ширину консолі
+        terminal_width = self.console.width
+        max_filename_width = max(40, terminal_width - 40)  # Мінімум 40, максимум terminal_width - 40
+
+        # Заголовок файлу (обрізати якщо занадто довгий)
+        file_icon = "⚙️" if self.current_file.status == "processing" else "✅" if self.current_file.status == "success" else "❌"
+        timestamp = time.strftime("%H:%M:%S")
+        filename = self.current_file.name
+        if len(filename) > max_filename_width:
+            filename = filename[:max_filename_width - 3] + "..."
+        header = f"[{file_icon}][{timestamp}][{self.current_file.hex_id}] {filename}"
+        lines.append(Text.from_markup(header, overflow="ellipsis"))
+
+        # Метадані файлу
+        if self.current_file.size > 0:
+            size_str = format_file_size(self.current_file.size)
+            date_str = format_date(self.current_file.modified_time) if self.current_file.modified_time else "—"
+            sha_preview = self.current_file.sha_hash[:6] if self.current_file.sha_hash else "—"
+            meta_line = f"├─ 📏 {size_str} │ 📅 {date_str} │ 🔒 SHA-256: {sha_preview}..."
+            lines.append(Text.from_markup(meta_line, overflow="crop"))
+
+        # Прогрес-бари для кожного етапу (адаптивна ширина)
+        # Визначити ширину прогрес-бару в залежності від ширини терміналу
+        bar_width = min(20, max(10, terminal_width - 60))  # Від 10 до 20 символів
+
+        stages_order = ["dedup", "extract", "classify", "rename"]
+        stage_icons = {
+            "dedup": "🔍 Duplicate scan",
+            "extract": "📝 Text extract  ",
+            "classify": "🤖 LLM classify  ",
+            "rename": "✏️  Rename file   ",
+        }
+
+        for stage in stages_order:
+            stage_data = self.current_stage_progress.get(stage)
+            if stage_data:
+                progress = stage_data.get("progress", 0.0)
+                elapsed = stage_data.get("time", 0.0)
+
+                # Прогрес-бар (адаптивна ширина)
+                filled = int(progress * bar_width)
+                bar = "█" * filled + "░" * (bar_width - filled)
+
+                percent = int(progress * 100)
+                time_str = f"{elapsed:.2f}s" if progress >= 1.0 else f"{elapsed:.2f}s..."
+
+                icon = stage_icons.get(stage, f"{stage}")
+                stage_line = f"├─ {icon} {bar} {percent:3d}% [{time_str}]"
+                lines.append(Text.from_markup(stage_line, overflow="crop"))
+            elif self.current_file.stage == stage:
+                # Поточний етап але без даних - показуємо що чекаємо
+                icon = stage_icons.get(stage, f"{stage}")
+                bar = "░" * bar_width
+                stage_line = f"├─ {icon} {bar}   0% [waiting...]"
+                lines.append(Text.from_markup(stage_line, overflow="crop"))
+
+        # Категорія якщо є (обрізати якщо занадто довга)
+        if self.current_file.category:
+            category = self.current_file.category
+            max_category_width = max(20, terminal_width - 30)
+            if len(category) > max_category_width:
+                category = category[:max_category_width - 3] + "..."
+            lines.append(Text.from_markup(f"└─ 🏷️  CATEGORY: {category}", overflow="crop"))
+
+        # Помилка якщо є (обрізати якщо занадто довга)
+        if self.current_file.error_msg:
+            error = self.current_file.error_msg
+            max_error_width = max(30, terminal_width - 30)
+            if len(error) > max_error_width:
+                error = error[:max_error_width - 3] + "..."
+            lines.append(Text.from_markup(f"└─ ❌ ERROR: {error}", overflow="crop"))
+
+        return lines
+
     def _render_display(self) -> Group:
-        """Відрендерити хакерський дисплей з файлами."""
+        """Відрендерити спрощений дисплей БЕЗ LOG та QUEUE."""
         components = []
 
+        # Отримати розмір терміналу
+        terminal_width = self.console.width
+        terminal_height = self.console.height
+
         # ═══════════════════════════════════════════════════════════
-        # HEADER: ASCII LOGO + СТАТУС
+        # HEADER: ASCII LOGO + СТАТУС (тільки якщо вистачає місця)
         # ═══════════════════════════════════════════════════════════
-        logo = render_ascii_logo(self.scan_dir or "/")
-        components.append(logo)
+        # Логотип показуємо тільки якщо ширина > 80
+        if terminal_width >= 80:
+            logo = render_ascii_logo(self.scan_dir or "/")
+            components.append(logo)
 
         # Статистика в хедері
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
-        # Використовуємо files_processed замість суми stages
-        files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
+        # Під час сканування показуємо кількість знайдених файлів
+        if self.scanning_active:
+            files_progress = f"Scanning... {self.files_scanned} files found"
+        else:
+            files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
-        header_table = Table.grid(padding=(0, 2))
-        header_table.add_row(
-            f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
-            f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
-            f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
-            f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
-            f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
-            f"[{THEME.dim_text}]⏳ [{THEME.number_primary}]{len(self.file_queue)}[/]",
-        )
+        # Адаптивна таблиця статистики
+        header_table = Table.grid(padding=(0, 1))
+
+        # Якщо ширина мала - показуємо тільки основні метрики
+        if terminal_width < 80:
+            header_table.add_row(
+                f"[{THEME.info}]📊 {files_progress}[/]",
+                f"[{THEME.info}]⏱️ {elapsed_str}[/]",
+            )
+            header_table.add_row(
+                f"[{THEME.success}]✅ {self.metrics.success_count}[/]",
+                f"[{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/]",
+                f"[{THEME.error}]❌ {self.metrics.error_count}[/]",
+            )
+        else:
+            # Повний вигляд для широких терміналів
+            header_table.add_row(
+                f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
+                f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
+                f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
+                f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+                f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
+            )
 
         llm_stats = ""
-        if self.metrics.llm_requests > 0:
+        if self.metrics.llm_requests > 0 and terminal_width >= 80:
             llm_stats = f"  │  [{THEME.llm_request}]🤖 LLM: [{THEME.number_primary}]{self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
 
         header_panel = Panel(
-            Group(header_table, Text(llm_stats, overflow="ignore")),
+            Group(header_table, Text(llm_stats, overflow="crop")),
             border_style=THEME.border,
             padding=(0, 1),
+            expand=False,
+            width=min(terminal_width, 120),  # Максимум 120 символів
         )
         components.append(header_panel)
 
         # ═══════════════════════════════════════════════════════════
-        # PROCESSING LOG: Останні 10 файлів
-        # ═══════════════════════════════════════════════════════════
-        if self.file_log:
-            log_lines = []
-            # Показати останні 10 файлів
-            for entry in self.file_log[-10:]:
-                entry_lines = render_file_log_entry(entry, show_details=True)
-                for line in entry_lines:
-                    log_lines.append(Text.from_markup(line))
-                log_lines.append(Text(""))  # Порожній рядок між файлами
-
-            log_panel = Panel(
-                Group(*log_lines) if log_lines else Text("Очікування файлів...", style="dim"),
-                title=f"[{THEME.header}]📜 PROCESSING LOG[/]",
-                border_style=THEME.decoration,
-                padding=(0, 1),
-            )
-            components.append(log_panel)
-
-        # ═══════════════════════════════════════════════════════════
-        # CURRENTLY PROCESSING: Поточний файл
+        # CURRENTLY PROCESSING: Поточний файл (ДЕТАЛЬНО З ПРОГРЕС-БАРАМИ)
         # ═══════════════════════════════════════════════════════════
         if self.current_file.name:
-            # Зібрати прогрес по етапах
-            stages_progress = {}
-            for stage_name, sp in self.stages.items():
-                stages_progress[stage_name] = (sp.completed, sp.total)
-
-            current_lines = render_current_file(self.current_file, stages_progress)
-            current_texts = [Text.from_markup(line) for line in current_lines]
+            current_lines = self._render_detailed_current_file()
 
             current_panel = Panel(
-                Group(*current_texts),
+                Group(*current_lines) if current_lines else Text("Очікування файлів...", style="dim"),
                 title=f"[{THEME.processing}]⚙️  CURRENTLY PROCESSING[/]",
                 border_style=THEME.processing,
                 padding=(0, 1),
+                expand=False,
+                width=min(terminal_width, 120),
             )
             components.append(current_panel)
 
         # ═══════════════════════════════════════════════════════════
-        # QUEUE: Наступні 5 файлів
+        # FOOTER: Детальна статистика (тільки якщо вистачає висоти)
         # ═══════════════════════════════════════════════════════════
-        if self.file_queue:
-            queue_lines = render_queue(self.file_queue)
-            queue_texts = [Text.from_markup(line) for line in queue_lines]
+        # Показуємо footer тільки якщо висота терміналу > 20 рядків
+        if terminal_height >= 20:
+            stats_table = Table.grid(padding=(0, 1))
 
-            queue_panel = Panel(
-                Group(*queue_texts) if queue_texts else Text("Черга порожня", style="dim"),
-                title=f"[{THEME.dim_text}]⏳ QUEUE (next 5 files)[/]",
-                border_style=THEME.separator,
+            # Адаптивна статистика
+            if terminal_width < 80:
+                # Компактний вигляд
+                stats_table.add_row(
+                    f"[{THEME.success}]✅ {self.metrics.success_count}[/]",
+                    f"[{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/]",
+                    f"[{THEME.error}]❌ {self.metrics.error_count}[/]",
+                )
+                if self.metrics.llm_requests > 0:
+                    success_rate = (self.metrics.success_count / max(self.files_processed, 1) * 100)
+                    stats_table.add_row(
+                        f"[{THEME.llm_request}]🤖 {self.metrics.llm_requests}[/]",
+                        f"[{THEME.success}]🔥 {success_rate:.0f}%[/]",
+                        "",
+                    )
+            else:
+                # Повний вигляд
+                stats_table.add_row(
+                    f"[{THEME.success}]✅ Completed: [{THEME.number_success}]{self.metrics.success_count}[/]",
+                    f"[{THEME.warning}]⚠️  Duplicates: [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+                    f"[{THEME.error}]❌ Errors: [{THEME.number_error}]{self.metrics.error_count}[/]",
+                    f"[{THEME.info}]⏳ Pending: [{THEME.number_primary}]{self.total_files - self.files_processed}[/]",
+                )
+
+                if self.metrics.llm_requests > 0:
+                    stats_table.add_row(
+                        f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
+                        f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
+                        f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(self.files_processed, 1) * 100):.0f}%[/]",
+                        "",
+                    )
+
+            footer_panel = Panel(
+                stats_table,
+                title=f"[{THEME.header}]📈 STATISTICS[/]" if terminal_width < 80 else f"[{THEME.header}]📈 SESSION STATISTICS[/]",
+                border_style=THEME.border,
                 padding=(0, 1),
+                expand=False,
+                width=min(terminal_width, 120),
             )
-            components.append(queue_panel)
-
-        # ═══════════════════════════════════════════════════════════
-        # FOOTER: Детальна статистика
-        # ═══════════════════════════════════════════════════════════
-        stats_table = Table.grid(padding=(0, 2))
-        stats_table.add_row(
-            f"[{THEME.success}]✅ Completed: [{THEME.number_success}]{self.metrics.success_count}[/]",
-            f"[{THEME.warning}]⚠️  Duplicates: [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
-            f"[{THEME.error}]❌ Errors: [{THEME.number_error}]{self.metrics.error_count}[/]",
-            f"[{THEME.info}]⏳ Pending: [{THEME.number_primary}]{len(self.file_queue)}[/]",
-        )
-
-        if self.metrics.llm_requests > 0:
-            stats_table.add_row(
-                f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
-                f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
-                f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(self.files_processed, 1) * 100):.0f}%[/]",
-                "",
-            )
-
-        footer_panel = Panel(
-            stats_table,
-            title=f"[{THEME.header}]📈 SESSION STATISTICS[/]",
-            border_style=THEME.border,
-            padding=(0, 1),
-        )
-        components.append(footer_panel)
+            components.append(footer_panel)
 
         return Group(*components)
 
