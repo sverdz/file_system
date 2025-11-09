@@ -190,12 +190,12 @@ class ProgressTracker:
     def start_visual(self) -> None:
         """Запустити візуальний прогрес-бар з Live display"""
         if self.use_compact_view:
-            # Запустити Live display (БЕЗ прогрес-бару - він буде в _render_display)
+            # Запустити Live display (БЕЗ auto_refresh - використовуємо свій thread)
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=10,  # 10 FPS для плавного оновлення
-                auto_refresh=True,  # ✅ Автоматичне оновлення таймера кожні 0.1 секунди
+                refresh_per_second=4,  # Максимум 4 FPS для ручного оновлення
+                auto_refresh=False,  # ❌ ВИМКНЕНО - використовуємо окремий thread
                 transient=False,
                 screen=False,  # Не використовувати alternate screen
             )
@@ -593,6 +593,7 @@ class ProgressTracker:
             title=f"[{THEME.header}]ЗАГАЛЬНИЙ ПРОГРЕС[/]",
             border_style=THEME.success if overall_progress >= 1.0 else THEME.warning,
             padding=(0, 1),
+            expand=True,
             width=int(terminal_width * 0.95),
         )
         components.append(progress_panel)
@@ -624,6 +625,7 @@ class ProgressTracker:
             title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
             padding=(0, 1),
+            expand=True,
             width=int(terminal_width * 0.95),
         )
         components.append(header_panel)
@@ -639,6 +641,7 @@ class ProgressTracker:
                 title=f"[{THEME.warning}]⚙️  ПОТОЧНИЙ ФАЙЛ[/]",
                 border_style=THEME.warning,
                 padding=(0, 1),
+                expand=True,
                 width=int(terminal_width * 0.95),
             )
             components.append(current_panel)
@@ -687,6 +690,7 @@ class ProgressTracker:
                 title=f"[{THEME.header}]📈 СТАТИСТИКА[/]" if terminal_width < 80 else f"[{THEME.header}]📈 СТАТИСТИКА СЕСІЇ[/]",
                 border_style=THEME.border,
                 padding=(0, 1),
+                expand=True,
                 width=int(terminal_width * 0.95),
             )
             components.append(footer_panel)
