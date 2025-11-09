@@ -525,10 +525,12 @@ class ProgressTracker:
         # Помилка якщо є (обрізати якщо занадто довга)
         if self.current_file.error_msg:
             error = self.current_file.error_msg
-            max_error_width = max(30, terminal_width - 30)
+            max_error_width = max(30, int(terminal_width * 0.90) - 20)  # 90% ширини - 20 для іконок
             if len(error) > max_error_width:
                 error = error[:max_error_width - 3] + "..."
-            lines.append(Text.from_markup(f"└─ ❌ ERROR: {error}", overflow="crop"))
+            error_text = Text.from_markup(f"└─ ❌ ПОМИЛКА: {error}")
+            error_text.overflow = "ellipsis"
+            lines.append(error_text)
 
         return lines
 
@@ -549,19 +551,21 @@ class ProgressTracker:
             components.append(logo)
 
         # ═══════════════════════════════════════════════════════════
-        # ЗАГАЛЬНИЙ ПРОГРЕС-БАР
+        # ЗАГАЛЬНИЙ ПРОГРЕС-БАР (В ОДНУ ЛІНІЮ)
         # ═══════════════════════════════════════════════════════════
         overall_progress = self.percentage() / 100.0  # Від 0.0 до 1.0
-        progress_bar_width = int(terminal_width * 0.90) - 30  # Залишаємо місце для тексту
+        progress_bar_width = int(terminal_width * 0.70)  # 70% для бару
         filled = int(overall_progress * progress_bar_width)
         bar = "█" * filled + "░" * (progress_bar_width - filled)
 
-        progress_text = f"[{THEME.info}]ЗАГАЛЬНИЙ ПРОГРЕС: [{bar}] {overall_progress*100:.1f}% ({self.files_processed}/{self.total_files} files)[/]"
+        # Все в одну лінію: бар + відсоток + кількість
+        progress_text = f"[{THEME.warning}]{bar}[/] [{THEME.number_primary}]{overall_progress*100:.1f}%[/] [{THEME.dim_text}]({self.files_processed}/{self.total_files} files)[/]"
 
         progress_panel = Panel(
             Text(progress_text, overflow="crop"),
-            border_style=THEME.success if overall_progress >= 1.0 else THEME.info,
-            padding=(0, 0),
+            title=f"[{THEME.header}]ЗАГАЛЬНИЙ ПРОГРЕС[/]",
+            border_style=THEME.success if overall_progress >= 1.0 else THEME.warning,
+            padding=(0, 1),
             expand=False,
             width=int(terminal_width * 0.95),
         )
@@ -590,23 +594,24 @@ class ProgressTracker:
 
         header_panel = Panel(
             Text(status_line, overflow="crop"),
+            title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
-            padding=(0, 0),  # Без padding для компактності
+            padding=(0, 1),
             expand=False,
             width=int(terminal_width * 0.95),  # 95% від ширини терміналу
         )
         components.append(header_panel)
 
         # ═══════════════════════════════════════════════════════════
-        # CURRENTLY PROCESSING: Поточний файл (ДЕТАЛЬНО З ПРОГРЕС-БАРАМИ)
+        # ПОТОЧНИЙ ФАЙЛ (ДЕТАЛЬНО З ПРОГРЕС-БАРАМИ)
         # ═══════════════════════════════════════════════════════════
         if self.current_file.name:
             current_lines = self._render_detailed_current_file()
 
             current_panel = Panel(
                 Group(*current_lines) if current_lines else Text("Очікування файлів...", style="dim"),
-                title=f"[{THEME.processing}]⚙️  CURRENTLY PROCESSING[/]",
-                border_style=THEME.processing,
+                title=f"[{THEME.warning}]⚙️  ПОТОЧНИЙ ФАЙЛ[/]",
+                border_style=THEME.warning,
                 padding=(0, 1),
                 expand=False,
                 width=int(terminal_width * 0.95),  # 95% від ширини терміналу
@@ -654,7 +659,7 @@ class ProgressTracker:
 
             footer_panel = Panel(
                 stats_table,
-                title=f"[{THEME.header}]📈 STATISTICS[/]" if terminal_width < 80 else f"[{THEME.header}]📈 SESSION STATISTICS[/]",
+                title=f"[{THEME.header}]📈 СТАТИСТИКА[/]" if terminal_width < 80 else f"[{THEME.header}]📈 СТАТИСТИКА СЕСІЇ[/]",
                 border_style=THEME.border,
                 padding=(0, 1),
                 expand=False,
