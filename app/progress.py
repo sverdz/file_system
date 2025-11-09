@@ -344,6 +344,7 @@ class ProgressTracker:
         )
 
         self.file_log.append(entry)
+        self.file_log = self.file_log[-500:]  # ✅ Зберігати тільки останні 500 файлів
 
         # Збільшити лічильник оброблених файлів
         self.files_processed += 1
