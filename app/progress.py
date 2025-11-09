@@ -568,7 +568,7 @@ class ProgressTracker:
             title=f"[{THEME.header}]ЗАГАЛЬНИЙ ПРОГРЕС[/]",
             border_style=THEME.success if overall_progress >= 1.0 else THEME.warning,
             padding=(0, 1),
-            expand=False,
+            expand=True,
             width=int(terminal_width * 0.95),
         )
         components.append(progress_panel)
@@ -600,8 +600,8 @@ class ProgressTracker:
             title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
             padding=(0, 1),
-            expand=False,
-            width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+            expand=True,
+            width=int(terminal_width * 0.95),
         )
         components.append(header_panel)
 
@@ -616,8 +616,8 @@ class ProgressTracker:
                 title=f"[{THEME.warning}]⚙️  ПОТОЧНИЙ ФАЙЛ[/]",
                 border_style=THEME.warning,
                 padding=(0, 1),
-                expand=False,
-                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+                expand=True,
+                width=int(terminal_width * 0.95),
             )
             components.append(current_panel)
 
@@ -665,8 +665,8 @@ class ProgressTracker:
                 title=f"[{THEME.header}]📈 СТАТИСТИКА[/]" if terminal_width < 80 else f"[{THEME.header}]📈 СТАТИСТИКА СЕСІЇ[/]",
                 border_style=THEME.border,
                 padding=(0, 1),
-                expand=False,
-                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+                expand=True,
+                width=int(terminal_width * 0.95),
             )
             components.append(footer_panel)
 
