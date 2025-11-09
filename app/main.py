@@ -656,6 +656,12 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                     extraction_time=0.0,
                     classification_time=0.0,
                 )
+                # Збільшити лічильник для правильного прогресу (без додавання в лог)
+                tracker.files_processed += 1
+                tracker.metrics.skipped_count += 1
+                # Оновити дисплей
+                if tracker.live and tracker.use_compact_view:
+                    tracker._update_display_now()
                 continue
 
             # ВИМКНЕНО: Видалити з черги (черга вимкнена)
@@ -669,7 +675,7 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 status="processing",
             )
 
-            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas_to_process)})")
+            tracker.update_description("extract", f"{meta.path.name} ({idx}/{len(metas)})")
 
             # Засікти час початку обробки (уникати перезапису глобального start_time)
             file_start_time = time.time()
