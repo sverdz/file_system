@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import hashlib
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Tuple, Optional, List
 from pathlib import Path
@@ -131,6 +132,20 @@ class ProgressTracker:
         # Список помилок
         self.error_list: List[Dict[str, str]] = []  # [{"file": "file.txt", "error": "помилка", "time": "12:34:56"}]
 
+        # Окремий потік для оновлення таймера
+        self._refresh_thread: Optional[threading.Thread] = None
+        self._stop_refresh = threading.Event()
+
+    def _refresh_loop(self) -> None:
+        """Окремий потік для оновлення дисплея кожну секунду (для таймера)."""
+        while not self._stop_refresh.is_set():
+            if self.live and self.use_compact_view:
+                try:
+                    self.live.update(self._render_display())
+                except Exception:
+                    pass  # Ігнорувати помилки під час оновлення
+            time.sleep(1.0)  # Оновлювати кожну секунду
+
     def _update_display_now(self) -> None:
         """Оновити дисплей ЗАВЖДИ (без throttling)."""
         if self.live and self.use_compact_view:
@@ -185,6 +200,11 @@ class ProgressTracker:
                 screen=False,  # Не використовувати alternate screen
             )
             self.live.start()
+
+            # Запустити окремий потік для оновлення таймера кожну секунду
+            self._stop_refresh.clear()
+            self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
+            self._refresh_thread.start()
         else:
             # Старий вигляд: окремі етапи
             self.progress = Progress(
@@ -228,6 +248,11 @@ class ProgressTracker:
 
     def stop_visual(self) -> None:
         """Зупинити візуальний прогрес-бар"""
+        # Зупинити потік оновлення
+        self._stop_refresh.set()
+        if self._refresh_thread and self._refresh_thread.is_alive():
+            self._refresh_thread.join(timeout=2.0)
+
         if self.live:
             self.live.stop()
             self.live = None
@@ -568,7 +593,6 @@ class ProgressTracker:
             title=f"[{THEME.header}]ЗАГАЛЬНИЙ ПРОГРЕС[/]",
             border_style=THEME.success if overall_progress >= 1.0 else THEME.warning,
             padding=(0, 1),
-            expand=False,
             width=int(terminal_width * 0.95),
         )
         components.append(progress_panel)
@@ -600,8 +624,7 @@ class ProgressTracker:
             title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
             padding=(0, 1),
-            expand=False,
-            width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+            width=int(terminal_width * 0.95),
         )
         components.append(header_panel)
 
@@ -616,8 +639,7 @@ class ProgressTracker:
                 title=f"[{THEME.warning}]⚙️  ПОТОЧНИЙ ФАЙЛ[/]",
                 border_style=THEME.warning,
                 padding=(0, 1),
-                expand=False,
-                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+                width=int(terminal_width * 0.95),
             )
             components.append(current_panel)
 
@@ -665,8 +687,7 @@ class ProgressTracker:
                 title=f"[{THEME.header}]📈 СТАТИСТИКА[/]" if terminal_width < 80 else f"[{THEME.header}]📈 СТАТИСТИКА СЕСІЇ[/]",
                 border_style=THEME.border,
                 padding=(0, 1),
-                expand=False,
-                width=int(terminal_width * 0.95),  # 95% від ширини терміналу
+                width=int(terminal_width * 0.95),
             )
             components.append(footer_panel)
 
