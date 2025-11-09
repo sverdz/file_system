@@ -164,8 +164,9 @@ class ProgressTracker:
             self.live = Live(
                 self._render_display(),
                 console=self.console,
-                refresh_per_second=4,  # 4 FPS для плавного таймера
-                transient=False
+                refresh_per_second=10,  # 10 FPS для плавного оновлення
+                transient=False,
+                screen=False,  # Не використовувати alternate screen
             )
             self.live.start()
         else:
@@ -441,11 +442,18 @@ class ProgressTracker:
         """Відрендерити детальний вигляд поточного файлу з прогрес-барами."""
         lines = []
 
-        # Заголовок файлу
+        # Отримати ширину консолі
+        terminal_width = self.console.width
+        max_filename_width = max(40, terminal_width - 40)  # Мінімум 40, максимум terminal_width - 40
+
+        # Заголовок файлу (обрізати якщо занадто довгий)
         file_icon = "⚙️" if self.current_file.status == "processing" else "✅" if self.current_file.status == "success" else "❌"
         timestamp = time.strftime("%H:%M:%S")
-        header = f"[{file_icon}][{timestamp}][{self.current_file.hex_id}] {self.current_file.name}"
-        lines.append(Text.from_markup(header))
+        filename = self.current_file.name
+        if len(filename) > max_filename_width:
+            filename = filename[:max_filename_width - 3] + "..."
+        header = f"[{file_icon}][{timestamp}][{self.current_file.hex_id}] {filename}"
+        lines.append(Text.from_markup(header, overflow="ellipsis"))
 
         # Метадані файлу
         if self.current_file.size > 0:
@@ -453,9 +461,12 @@ class ProgressTracker:
             date_str = format_date(self.current_file.modified_time) if self.current_file.modified_time else "—"
             sha_preview = self.current_file.sha_hash[:6] if self.current_file.sha_hash else "—"
             meta_line = f"├─ 📏 {size_str} │ 📅 {date_str} │ 🔒 SHA-256: {sha_preview}..."
-            lines.append(Text.from_markup(meta_line))
+            lines.append(Text.from_markup(meta_line, overflow="crop"))
 
-        # Прогрес-бари для кожного етапу
+        # Прогрес-бари для кожного етапу (адаптивна ширина)
+        # Визначити ширину прогрес-бару в залежності від ширини терміналу
+        bar_width = min(20, max(10, terminal_width - 60))  # Від 10 до 20 символів
+
         stages_order = ["dedup", "extract", "classify", "rename"]
         stage_icons = {
             "dedup": "🔍 Duplicate scan",
@@ -470,30 +481,38 @@ class ProgressTracker:
                 progress = stage_data.get("progress", 0.0)
                 elapsed = stage_data.get("time", 0.0)
 
-                # Прогрес-бар (20 символів)
-                filled = int(progress * 20)
-                bar = "█" * filled + "░" * (20 - filled)
+                # Прогрес-бар (адаптивна ширина)
+                filled = int(progress * bar_width)
+                bar = "█" * filled + "░" * (bar_width - filled)
 
                 percent = int(progress * 100)
                 time_str = f"{elapsed:.2f}s" if progress >= 1.0 else f"{elapsed:.2f}s..."
 
                 icon = stage_icons.get(stage, f"{stage}")
                 stage_line = f"├─ {icon} {bar} {percent:3d}% [{time_str}]"
-                lines.append(Text.from_markup(stage_line))
+                lines.append(Text.from_markup(stage_line, overflow="crop"))
             elif self.current_file.stage == stage:
                 # Поточний етап але без даних - показуємо що чекаємо
                 icon = stage_icons.get(stage, f"{stage}")
-                bar = "░" * 20
+                bar = "░" * bar_width
                 stage_line = f"├─ {icon} {bar}   0% [waiting...]"
-                lines.append(Text.from_markup(stage_line))
+                lines.append(Text.from_markup(stage_line, overflow="crop"))
 
-        # Категорія якщо є
+        # Категорія якщо є (обрізати якщо занадто довга)
         if self.current_file.category:
-            lines.append(Text.from_markup(f"└─ 🏷️  CATEGORY: {self.current_file.category}"))
+            category = self.current_file.category
+            max_category_width = max(20, terminal_width - 30)
+            if len(category) > max_category_width:
+                category = category[:max_category_width - 3] + "..."
+            lines.append(Text.from_markup(f"└─ 🏷️  CATEGORY: {category}", overflow="crop"))
 
-        # Помилка якщо є
+        # Помилка якщо є (обрізати якщо занадто довга)
         if self.current_file.error_msg:
-            lines.append(Text.from_markup(f"└─ ❌ ERROR: {self.current_file.error_msg}", style=THEME.error))
+            error = self.current_file.error_msg
+            max_error_width = max(30, terminal_width - 30)
+            if len(error) > max_error_width:
+                error = error[:max_error_width - 3] + "..."
+            lines.append(Text.from_markup(f"└─ ❌ ERROR: {error}", overflow="crop"))
 
         return lines
 
@@ -501,11 +520,17 @@ class ProgressTracker:
         """Відрендерити спрощений дисплей БЕЗ LOG та QUEUE."""
         components = []
 
+        # Отримати розмір терміналу
+        terminal_width = self.console.width
+        terminal_height = self.console.height
+
         # ═══════════════════════════════════════════════════════════
-        # HEADER: ASCII LOGO + СТАТУС
+        # HEADER: ASCII LOGO + СТАТУС (тільки якщо вистачає місця)
         # ═══════════════════════════════════════════════════════════
-        logo = render_ascii_logo(self.scan_dir or "/")
-        components.append(logo)
+        # Логотип показуємо тільки якщо ширина > 80
+        if terminal_width >= 80:
+            logo = render_ascii_logo(self.scan_dir or "/")
+            components.append(logo)
 
         # Статистика в хедері
         elapsed = time.time() - self.start_time
@@ -517,23 +542,40 @@ class ProgressTracker:
         else:
             files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
-        header_table = Table.grid(padding=(0, 2))
-        header_table.add_row(
-            f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
-            f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
-            f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
-            f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
-            f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
-        )
+        # Адаптивна таблиця статистики
+        header_table = Table.grid(padding=(0, 1))
+
+        # Якщо ширина мала - показуємо тільки основні метрики
+        if terminal_width < 80:
+            header_table.add_row(
+                f"[{THEME.info}]📊 {files_progress}[/]",
+                f"[{THEME.info}]⏱️ {elapsed_str}[/]",
+            )
+            header_table.add_row(
+                f"[{THEME.success}]✅ {self.metrics.success_count}[/]",
+                f"[{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/]",
+                f"[{THEME.error}]❌ {self.metrics.error_count}[/]",
+            )
+        else:
+            # Повний вигляд для широких терміналів
+            header_table.add_row(
+                f"[{THEME.info}]📊 PROCESSED: [{THEME.number_primary}]{files_progress}[/]",
+                f"[{THEME.info}]⏱️  [{THEME.number_primary}]{elapsed_str}[/]",
+                f"[{THEME.success}]✅ [{THEME.number_success}]{self.metrics.success_count}[/]",
+                f"[{THEME.warning}]⚠️  [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+                f"[{THEME.error}]❌ [{THEME.number_error}]{self.metrics.error_count}[/]",
+            )
 
         llm_stats = ""
-        if self.metrics.llm_requests > 0:
+        if self.metrics.llm_requests > 0 and terminal_width >= 80:
             llm_stats = f"  │  [{THEME.llm_request}]🤖 LLM: [{THEME.number_primary}]{self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
 
         header_panel = Panel(
-            Group(header_table, Text(llm_stats, overflow="ignore")),
+            Group(header_table, Text(llm_stats, overflow="crop")),
             border_style=THEME.border,
             padding=(0, 1),
+            expand=False,
+            width=min(terminal_width, 120),  # Максимум 120 символів
         )
         components.append(header_panel)
 
@@ -548,35 +590,59 @@ class ProgressTracker:
                 title=f"[{THEME.processing}]⚙️  CURRENTLY PROCESSING[/]",
                 border_style=THEME.processing,
                 padding=(0, 1),
+                expand=False,
+                width=min(terminal_width, 120),
             )
             components.append(current_panel)
 
         # ═══════════════════════════════════════════════════════════
-        # FOOTER: Детальна статистика
+        # FOOTER: Детальна статистика (тільки якщо вистачає висоти)
         # ═══════════════════════════════════════════════════════════
-        stats_table = Table.grid(padding=(0, 2))
-        stats_table.add_row(
-            f"[{THEME.success}]✅ Completed: [{THEME.number_success}]{self.metrics.success_count}[/]",
-            f"[{THEME.warning}]⚠️  Duplicates: [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
-            f"[{THEME.error}]❌ Errors: [{THEME.number_error}]{self.metrics.error_count}[/]",
-            f"[{THEME.info}]⏳ Pending: [{THEME.number_primary}]{len(self.file_queue)}[/]",
-        )
+        # Показуємо footer тільки якщо висота терміналу > 20 рядків
+        if terminal_height >= 20:
+            stats_table = Table.grid(padding=(0, 1))
 
-        if self.metrics.llm_requests > 0:
-            stats_table.add_row(
-                f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
-                f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
-                f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(self.files_processed, 1) * 100):.0f}%[/]",
-                "",
+            # Адаптивна статистика
+            if terminal_width < 80:
+                # Компактний вигляд
+                stats_table.add_row(
+                    f"[{THEME.success}]✅ {self.metrics.success_count}[/]",
+                    f"[{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/]",
+                    f"[{THEME.error}]❌ {self.metrics.error_count}[/]",
+                )
+                if self.metrics.llm_requests > 0:
+                    success_rate = (self.metrics.success_count / max(self.files_processed, 1) * 100)
+                    stats_table.add_row(
+                        f"[{THEME.llm_request}]🤖 {self.metrics.llm_requests}[/]",
+                        f"[{THEME.success}]🔥 {success_rate:.0f}%[/]",
+                        "",
+                    )
+            else:
+                # Повний вигляд
+                stats_table.add_row(
+                    f"[{THEME.success}]✅ Completed: [{THEME.number_success}]{self.metrics.success_count}[/]",
+                    f"[{THEME.warning}]⚠️  Duplicates: [{THEME.number_primary}]{self.metrics.duplicate_groups}[/]",
+                    f"[{THEME.error}]❌ Errors: [{THEME.number_error}]{self.metrics.error_count}[/]",
+                    f"[{THEME.info}]⏳ Pending: [{THEME.number_primary}]{self.total_files - self.files_processed}[/]",
+                )
+
+                if self.metrics.llm_requests > 0:
+                    stats_table.add_row(
+                        f"[{THEME.llm_request}]🤖 LLM Requests: [{THEME.number_primary}]{self.metrics.llm_requests}[/]",
+                        f"[{THEME.llm_response}]💬 LLM Responses: [{THEME.number_primary}]{self.metrics.llm_responses}[/]",
+                        f"[{THEME.success}]🔥 Success Rate: [{THEME.number_success}]{(self.metrics.success_count / max(self.files_processed, 1) * 100):.0f}%[/]",
+                        "",
+                    )
+
+            footer_panel = Panel(
+                stats_table,
+                title=f"[{THEME.header}]📈 STATISTICS[/]" if terminal_width < 80 else f"[{THEME.header}]📈 SESSION STATISTICS[/]",
+                border_style=THEME.border,
+                padding=(0, 1),
+                expand=False,
+                width=min(terminal_width, 120),
             )
-
-        footer_panel = Panel(
-            stats_table,
-            title=f"[{THEME.header}]📈 SESSION STATISTICS[/]",
-            border_style=THEME.border,
-            padding=(0, 1),
-        )
-        components.append(footer_panel)
+            components.append(footer_panel)
 
         return Group(*components)
 
