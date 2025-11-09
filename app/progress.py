@@ -400,6 +400,8 @@ class ProgressTracker:
             self.metrics.success_count += 1
         elif status == "error":
             self.metrics.error_count += 1
+        elif status == "skipped":
+            self.metrics.skipped_count += 1
 
         # Оновити Live display
         if self.live and self.use_compact_view:
@@ -559,10 +561,10 @@ class ProgressTracker:
         bar = "█" * filled + "░" * (progress_bar_width - filled)
 
         # Все в одну лінію: бар + відсоток + кількість
-        progress_text = f"[{THEME.warning}]{bar}[/] [{THEME.number_primary}]{overall_progress*100:.1f}%[/] [{THEME.dim_text}]({self.files_processed}/{self.total_files} files)[/]"
+        progress_text = f"[{THEME.warning}]{bar}[/] [{THEME.number_primary}]{overall_progress*100:.1f}%[/] [{THEME.dim_text}]({self.files_processed}/{self.total_files} файлів)[/]"
 
         progress_panel = Panel(
-            Text(progress_text, overflow="crop"),
+            Text.from_markup(progress_text, overflow="crop"),
             title=f"[{THEME.header}]ЗАГАЛЬНИЙ ПРОГРЕС[/]",
             border_style=THEME.success if overall_progress >= 1.0 else THEME.warning,
             padding=(0, 1),
@@ -577,23 +579,24 @@ class ProgressTracker:
 
         # Під час сканування показуємо кількість знайдених файлів
         if self.scanning_active:
-            files_progress = f"Scanning... {self.files_scanned} files found"
+            files_progress = f"Сканування... знайдено {self.files_scanned} файлів"
         else:
             files_progress = f"{self.files_processed}/{self.total_files}" if self.total_files > 0 else "0/0"
 
-        # Компактний статус-бар в 1 рядок
+        # Компактний статус-бар в 1 рядок: відсотки + кількість + час + метрики
+        progress_percent = f"{overall_progress:.1f}%"
         if terminal_width < 80:
             # Компактний вигляд
-            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅{self.metrics.success_count} [{THEME.warning}]⚠️{self.metrics.duplicate_groups} [{THEME.error}]❌{self.metrics.error_count}[/]"
+            status_line = f"[{THEME.number_primary}]{progress_percent}[/] [{THEME.info}]({files_progress})[/] │ ⏱️ {elapsed_str} │ [{THEME.success}]✅{self.metrics.success_count}[/] [{THEME.warning}]⚠️{self.metrics.duplicate_groups}[/] [{THEME.error}]❌{self.metrics.error_count}[/]"
         else:
             # Повний вигляд в 1 рядок
             llm_part = ""
             if self.metrics.llm_requests > 0:
                 llm_part = f" │ [{THEME.llm_request}]🤖 {self.metrics.llm_requests}/{self.metrics.llm_responses}[/]"
-            status_line = f"[{THEME.info}]📊 {files_progress} │ ⏱️ {elapsed_str} │ [{THEME.success}]✅ {self.metrics.success_count} │ [{THEME.warning}]⚠️ {self.metrics.duplicate_groups} │ [{THEME.error}]❌ {self.metrics.error_count}[/]{llm_part}"
+            status_line = f"[{THEME.number_primary}]{progress_percent}[/] [{THEME.info}]({files_progress})[/] │ ⏱️ {elapsed_str} │ [{THEME.success}]✅ {self.metrics.success_count}[/] │ [{THEME.warning}]⚠️ {self.metrics.duplicate_groups}[/] │ [{THEME.error}]❌ {self.metrics.error_count}[/]{llm_part}"
 
         header_panel = Panel(
-            Text(status_line, overflow="crop"),
+            Text.from_markup(status_line, overflow="crop"),
             title=f"[{THEME.header}]СТАТУС[/]",
             border_style=THEME.border,
             padding=(0, 1),
@@ -670,14 +673,11 @@ class ProgressTracker:
         return Group(*components)
 
     def percentage(self) -> float:
-        total_weight = sum(sp.weight for sp in self.stages.values())
-        if not total_weight:
+        """Розрахунок прогресу лінійно від кількості оброблених файлів."""
+        if self.total_files == 0:
             return 0.0
-        acc = 0.0
-        for sp in self.stages.values():
-            if sp.total:
-                acc += sp.weight * min(sp.completed / sp.total, 1.0)
-        return min(100.0, max(0.0, (acc / total_weight) * 100.0))
+        # Лінійний прогрес: скільки файлів оброблено від загальної кількості
+        return min(100.0, max(0.0, (self.files_processed / self.total_files) * 100.0))
 
     def eta_seconds(self) -> float | None:
         if len(self.history) < 2:
@@ -723,11 +723,15 @@ class ProgressTracker:
                 error["error"]
             )
 
+        # Отримати ширину терміналу для симетрії з іншими панелями
+        terminal_width = console.width
+
         panel = Panel(
             error_table,
             title=f"[{THEME.error}]❌ Помилки обробки ({len(self.error_list)} файлів)[/]",
             border_style=THEME.error,
             padding=(1, 2),
+            width=int(terminal_width * 0.95),  # Та ж ширина як у всіх панелей
         )
         console.print(panel)
         console.print()
