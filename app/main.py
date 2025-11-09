@@ -138,8 +138,9 @@ def main() -> None:
             console.print(markup(THEME.primary_text, "[4] Налаштування"))
             console.print(markup(THEME.primary_text, "[5] Відновити незавершений запуск"))
             console.print(markup(THEME.primary_text, "[6] Сортування та подання"))
-            console.print(markup(THEME.primary_text, "[7] Перевірити/переінсталювати залежності"))
-            console.print(markup(THEME.primary_text, "[8] Вихід"))
+            console.print(markup(THEME.primary_text, "[7] Робота з дублікатами"))
+            console.print(markup(THEME.primary_text, "[8] Перевірити/переінсталювати залежності"))
+            console.print(markup(THEME.primary_text, "[9] Вихід"))
             choice = input("Оберіть опцію: ").strip()
             if choice == "1":
                 execute_pipeline(cfg, mode="dry-run")
@@ -165,8 +166,10 @@ def main() -> None:
             elif choice == "6":
                 sort_and_organize(cfg)
             elif choice == "7":
-                deps.ensure_ready()
+                duplicates_menu(cfg)
             elif choice == "8":
+                deps.ensure_ready()
+            elif choice == "9":
                 console.print(markup(THEME.success, "До побачення!"))
                 break
             else:
@@ -399,6 +402,107 @@ def sort_and_organize(cfg: Config) -> None:
         console.print(format_error(f"\nПомилка виконання: {e}"))
         import traceback
         console.print(markup(THEME.dim_text, traceback.format_exc()))
+
+
+def duplicates_menu(cfg: Config) -> None:
+    """Меню для роботи з дублікатами."""
+    console.print(header_line("Робота з дублікатами"))
+
+    # Знайти останній запуск
+    latest_run = find_latest_run()
+    if not latest_run:
+        console.print(format_error("Помилка: Немає жодного запуску. Спочатку виконайте аналіз (пункт 1)."))
+        return
+
+    console.print(format_status(f"Використовується запуск: {latest_run.name}", is_error=False))
+
+    # Прочитати інвентаризацію
+    try:
+        df = read_inventory(latest_run)
+        console.print(format_status(f"Завантажено {len(df)} записів", is_error=False))
+    except Exception as e:
+        console.print(format_error(f"Помилка читання інвентаризації: {e}"))
+        return
+
+    # Підрахунок дублікатів
+    duplicates = df[df['dup_type'] == 'exact_dup']
+    if duplicates.empty:
+        console.print(markup(THEME.success, "\n✅ Дублікатів не знайдено!"))
+        return
+
+    # Групи дублікатів
+    dup_groups = duplicates.groupby('dup_group_id')
+    num_groups = len(dup_groups)
+    num_files = len(duplicates)
+
+    console.print(f"\n{markup(THEME.warning, f'Знайдено дублікатів:')}")
+    console.print(f"  • Груп дублікатів: {format_number(num_groups, THEME.warning)}")
+    console.print(f"  • Файлів-дублікатів: {format_number(num_files, THEME.warning)}")
+
+    # Меню опцій
+    console.print(f"\n{markup(THEME.title, 'Оберіть дію:')}")
+    console.print(markup(THEME.primary_text, "[1] Показати список дублікатів"))
+    console.print(markup(THEME.primary_text, "[2] Перемістити всі дублікати в папку 'duplicates'"))
+    console.print(markup(THEME.primary_text, "[3] Видалити всі дублікати (в кошик)"))
+    console.print(markup(THEME.primary_text, "[4] Повернутися до головного меню"))
+
+    choice = input("\nВаш вибір: ").strip()
+
+    if choice == "1":
+        # Показати список дублікатів
+        console.print(f"\n{markup(THEME.header, '═══ СПИСОК ДУБЛІКАТІВ ═══')}\n")
+
+        for group_id, group in dup_groups:
+            console.print(f"{markup(THEME.warning, f'Група {group_id}:')}")
+            for _, row in group.iterrows():
+                console.print(f"  • {row['path_final']} ({row['dup_rank']}) - {row['size_mb']:.2f} MB")
+            console.print()
+
+    elif choice == "2":
+        # Перемістити дублікати
+        console.print(markup(THEME.processing, "\nПереміщення дублікатів в папку 'duplicates'..."))
+
+        # Зібрати мапу дублікатів
+        from collections import defaultdict
+        duplicates_map = defaultdict(list)
+
+        for _, row in duplicates.iterrows():
+            if row['dup_rank'] != 'V1':  # Не переміщуємо мастер-файл
+                duplicates_map[row['dup_group_id']].append(Path(row['path_final']))
+
+        root = cfg.root_path
+        mapping = quarantine_files(root, dict(duplicates_map))
+
+        console.print(format_status(f"Переміщено {len(mapping)} файлів в {root / 'duplicates'}", is_error=False))
+
+        # Оновити інвентаризацію
+        console.print(markup(THEME.processing, "\nОновлення інвентаризації..."))
+        file_updates = {str(k): str(v) for k, v in mapping.items()}
+        update_inventory_after_sort(latest_run, file_updates, "duplicates_quarantine")
+        console.print(format_status(f"Інвентаризація оновлена: {latest_run / 'inventory.xlsx'}", is_error=False))
+
+    elif choice == "3":
+        # Видалити дублікати
+        console.print(markup(THEME.warning, f"\n⚠️  УВАГА: Буде видалено {num_files} файлів в кошик!"))
+        confirm = input("Продовжити? [y/N]: ").strip().lower()
+
+        if confirm in {"y", "yes", "так", "т"}:
+            # Видалити тільки дублікати, не мастер-файли
+            files_to_delete = []
+            for _, row in duplicates.iterrows():
+                if row['dup_rank'] != 'V1':
+                    files_to_delete.append(Path(row['path_final']))
+
+            delete_duplicates(files_to_delete)
+            console.print(format_status(f"Видалено {len(files_to_delete)} файлів в кошик", is_error=False))
+        else:
+            console.print(markup(THEME.warning, "Скасовано"))
+
+    elif choice == "4":
+        return
+
+    else:
+        console.print(markup(THEME.warning, "Невірний вибір"))
 
 
 def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_strategy: Optional[str] = None) -> None:
@@ -881,7 +985,8 @@ def execute_pipeline(cfg: Config, mode: str, delete_exact: bool = False, sort_st
                 delete_duplicates(duplicates_flat)
                 deleted_set.update(duplicates_flat)
             else:
-                mapping = quarantine_files(get_output_dir(), duplicates_files_map)
+                # Переміщуємо дублікати в папку "duplicates" в корені сканованої папки
+                mapping = quarantine_files(root, duplicates_files_map)
                 for original, new_path in mapping.items():
                     quarantine_updates[original] = str(new_path)
 

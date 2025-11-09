@@ -10,7 +10,8 @@ from send2trash import send2trash
 from .loggingx import log_readable
 
 
-def quarantine_files(root: Path, duplicates: Dict[str, List[Path]], quarantine_root: str = "_duplicates") -> Dict[Path, Path]:
+def quarantine_files(root: Path, duplicates: Dict[str, List[Path]], quarantine_root: str = "duplicates") -> Dict[Path, Path]:
+    """Перемістити дублікати в папку 'duplicates' в корені сканованої папки."""
     mapping: Dict[Path, Path] = {}
     for group_id, files in duplicates.items():
         target_dir = root / quarantine_root / group_id
@@ -21,7 +22,7 @@ def quarantine_files(root: Path, duplicates: Dict[str, List[Path]], quarantine_r
             target = target_dir / target_name
             shutil.move(str(path), str(target))
             mapping[path] = target
-            log_readable(f"У карантин: {path.name} → {target}")
+            log_readable(f"Дублікат переміщено: {path.name} → {target}")
     return mapping
 
 
